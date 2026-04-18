@@ -105,6 +105,19 @@ export async function deleteTenant(id: string) {
   return request<void>(`/superadmin/tenants/${id}`, { method: 'DELETE' });
 }
 
+export async function downloadTenantBackup(id: string): Promise<Blob> {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('superadmin_token') : null;
+  const response = await fetch(`${API_BASE}/superadmin/tenants/${id}/backup`, {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({ message: response.statusText }));
+    throw new ApiError(body.message || 'Backup failed', response.status);
+  }
+  return response.blob();
+}
+
 export interface TenantFilters {
   plan?: string;
   status?: string;
