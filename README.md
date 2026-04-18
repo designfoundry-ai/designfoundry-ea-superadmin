@@ -1,8 +1,26 @@
 # DesignFoundry Super Admin Console
 
-Platform operations hub for the DesignFoundry SaaS platform. Provides full visibility and management capability across all tenants, users, billing, licensing, system health, and platform-wide activity.
+Platform operations hub for DesignFoundry SaaS — tenant management, billing, licensing, system health, and platform-wide activity.
 
 **Spec:** `SPECS/S070-super-admin-console.md`
+
+---
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│              Super Admin Console (Next.js 15)                     │
+│                                                                      │
+│  /superadmin/*  ───────────────────────────────────────────────►│
+│                    calls main platform API (read-only ops)            │
+│                                                                      │
+│  main branch ──► GitHub Actions ──► Docker ──► Cloud Run          │
+│                                   Build+Push      Deploy              │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+**Single environment: production only.** No staging. Main branch = production.
 
 ---
 
@@ -12,24 +30,15 @@ Platform operations hub for the DesignFoundry SaaS platform. Provides full visib
 - **TailwindCSS** — Utility-first styling
 - **Recharts** — Dashboard charts
 - **Lucide React** — Icons
-- **Radix UI** — Accessible primitives (dialog, dropdown, tabs, etc.)
 
 ---
 
-## Getting Started
+## Quick Start
 
 ```bash
-# Install dependencies
 npm install
-
-# Set environment variables
 cp .env.example .env.local
-
-# Run development server
 npm run dev
-
-# Build for production
-npm run build
 ```
 
 ---
@@ -37,13 +46,8 @@ npm run build
 ## Environment Variables
 
 ```env
-# Super Admin Console
-NEXT_PUBLIC_API_URL=https://api.designfoundry.ai   # Main platform API base
-API_SECRET_TOKEN=your-superadmin-secret             # Backend auth token
+NEXT_PUBLIC_API_URL=https://api.designfoundry.ai/api/v1   # Main platform API
 NODE_ENV=development
-
-# Optional: Redis cache for dashboard KPIs
-REDIS_URL=redis://localhost:6379
 ```
 
 ---
@@ -53,70 +57,80 @@ REDIS_URL=redis://localhost:6379
 ```
 src/
 ├── app/
-│   ├── (dashboard)/              # Auth layout
-│   │   └── layout.tsx
-│   ├── superadmin/               # All superadmin routes
-│   │   ├── page.tsx              # Overview dashboard
-│   │   ├── tenants/              # Tenant management
-│   │   ├── billing/              # Billing & subscriptions
-│   │   ├── licenses/             # On-prem license management
-│   │   ├── users/               # Cross-tenant users
-│   │   ├── activity/            # Platform activity log
-│   │   ├── system/              # System health
-│   │   ├── support/             # Support queue
-│   │   ├── settings/            # Platform settings
-│   │   └── audit/              # Admin audit log
-│   └── login/
-│       └── page.tsx
+│   ├── login/page.tsx                  # Super admin login
+│   └── superadmin/
+│       ├── layout.tsx                   # Auth guard + sidebar
+│       ├── page.tsx                    # Overview dashboard
+│       ├── tenants/                    # Tenant management
+│       ├── billing/                     # Billing & Stripe
+│       ├── licenses/                   # On-prem license management
+│       ├── users/                      # Cross-tenant users
+│       ├── activity/                  # Platform activity log
+│       ├── system/                     # System health
+│       ├── support/                   # Support queue
+│       ├── settings/                  # Platform settings
+│       └── audit/                     # Admin audit log
 ├── components/
-│   ├── ui/                      # shadcn/ui primitives
-│   ├── layout/                  # Sidebar, header, etc.
-│   ├── dashboard/               # Dashboard-specific components
-│   ├── tenants/                 # Tenant management components
-│   ├── billing/                 # Billing components
-│   ├── licenses/               # License components
-│   ├── activity/               # Activity log components
-│   ├── system/                 # System health components
-│   └── support/               # Support queue components
-├── lib/
-│   ├── api.ts                  # API client
-│   ├── auth.ts                # Superadmin auth
-│   └── utils.ts               # Utilities
-├── hooks/
-│   └── use-superadmin-api.ts  # API data hooks
-└── types/
-    ├── tenant.ts
-    ├── billing.ts
-    ├── license.ts
-    └── activity.ts
+│   ├── layout/sidebar.tsx
+│   └── ui/
+└── lib/
+    └── api.ts                          # Typed API client
 ```
 
 ---
 
-## Architecture
+## Authentication
 
+Login with a `role: superadmin` JWT from the main platform. Token stored in localStorage, validated on every `/superadmin/*` route.
+
+---
+
+## Production Deployment
+
+### 1. One-time GCP Setup
+
+```bash
+# Set your project ID
+export GCP_PROJECT_ID=your-project-id
+
+# Run the setup script
+./scripts/gcp-setup.sh
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│               Super Admin Console (this app)                      │
-│                                                                  │
-│   Next.js 15 App Router                                           │
-│   └── /superadmin/* (superadmin only, role=superadmin JWT)       │
-└────────────────────────────┬──────────────────────────────────────┘
-                            │ HTTP API
-                            ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                   DesignFoundry Platform API                        │
-│   NestJS Backend                                                  │
-│   └── /api/v1/superadmin/* (S070 API endpoints)                  │
-│       ├── /stats, /tenants, /billing, /licenses, /activity     │
-│       └── Stripe API (billing data)                               │
-└────────────────────────────┬──────────────────────────────────────┘
-                            │
-                            ▼
-┌──────────────────────────────────────────────────────────────────┐
-│               PostgreSQL + Redis + SMTP                            │
-└──────────────────────────────────────────────────────────────────┘
-```
+
+The script:
+- Enables GCP APIs (Cloud Run, Artifact Registry, IAM)
+- Creates the Artifact Registry Docker repository
+- Creates a deployment service account with appropriate roles
+- Deploys an initial placeholder Cloud Run service
+- Prints the GitHub Actions variables to add
+
+### 2. GitHub Actions Variables
+
+Add to `https://github.com/designfoundry-ai/designfoundry-ea-superadmin/settings/variables/actions`:
+
+| Variable | Value |
+|---|---|
+| `GCP_PROJECT_ID` | Your GCP project ID |
+| `GCP_REGION` | `europe-central2` |
+| `ARTIFACT_REGISTRY_REPO` | `designfoundry` |
+| `CLOUD_RUN_SERVICE` | `designfoundry-ea-superadmin` |
+| `NEXT_PUBLIC_API_URL` | `https://api.designfoundry.ai/api/v1` |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | Full provider resource name (after creating Workload Identity Pool) |
+| `GCP_DEPLOYER_SERVICE_ACCOUNT` | `superadmin-deployer@project.iam.gserviceaccount.com` |
+| `GCP_FRONTEND_SERVICE_ACCOUNT` | Same as above |
+
+### 3. GitHub Actions — Enable
+
+Push to `main` → GitHub Actions automatically:
+1. Runs `npm ci && npm run build`
+2. Builds and pushes Docker image to Artifact Registry
+3. Deploys to Cloud Run
+
+No manual steps required after setup.
+
+### 4. DNS
+
+After first deploy, point `admin.designfoundry.ai` → Cloud Run service URL (shown in GitHub Actions summary).
 
 ---
 
@@ -124,38 +138,37 @@ src/
 
 | Route | Description |
 |---|---|
-| `/superadmin` | Overview dashboard — MRR, ARR, tenants, churn, signups |
-| `/superadmin/tenants` | Tenant list, suspend/activate, detail view |
+| `/superadmin` | Overview — MRR, tenants, churn, signups, system status |
+| `/superadmin/tenants` | Tenant list, suspend/activate, per-tenant detail |
 | `/superadmin/billing` | Stripe revenue, failed payments, refunds |
 | `/superadmin/licenses` | On-premises license management |
 | `/superadmin/users` | All users across all tenants |
 | `/superadmin/activity` | Platform-wide activity log |
 | `/superadmin/system` | Service health, errors, deployments |
 | `/superadmin/support` | Support ticket queue |
-| `/superadmin/settings` | Platform settings, email templates, feature flags |
+| `/superadmin/settings` | Platform settings, feature flags |
 | `/superadmin/audit` | Admin action audit log |
 
 ---
 
-## Authentication
+## CI/CD
 
-Super admin access requires a JWT token with `role: 'superadmin'`. Login via the main DesignFoundry platform's admin credentials.
-
-```typescript
-// API client with auth header
-const api = fetchWithAuth('/api/v1/superadmin/...', {
-  headers: { Authorization: `Bearer ${token}` }
-});
 ```
-
----
-
-## Contributing
-
-1. Read `SPECS/S070-super-admin-console.md` for the full feature spec
-2. Implement against the spec
-3. Ensure all API calls handle 403 (not superadmin) gracefully
-4. All admin actions must be logged via the admin audit log
+push to main
+     │
+     ▼
+┌─────────────────────┐
+│  GitHub Actions     │
+│  CI: lint + build  │
+└────────┬────────────┘
+         │ build passes
+         ▼
+┌─────────────────────┐
+│  Deploy to Cloud Run │
+│  docker build+push  │
+│  gcloud run deploy  │
+└─────────────────────┘
+```
 
 ---
 
