@@ -147,6 +147,10 @@ export async function getAllUsers(params?: UserFilters) {
   return request<UserList>(`/superadmin/users${qs}`);
 }
 
+export async function getTenantUsers(tenantId: string) {
+  return request<UserList>(`/superadmin/tenants/${tenantId}/users`);
+}
+
 export async function disableUser(id: string) {
   return request<void>(`/superadmin/users/${id}/disable`, { method: 'POST' });
 }
