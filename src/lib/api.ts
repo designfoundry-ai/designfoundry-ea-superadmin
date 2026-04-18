@@ -5,7 +5,7 @@
  * Auth: Bearer token with role=superadmin.
  */
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api/v1';
+const API_BASE = '/api';
 
 export interface ApiResponse<T> {
   data: T;
@@ -231,22 +231,42 @@ export interface FailedPayment {
 // ─── Licenses ─────────────────────────────────────────────────────────
 
 export async function getLicenses() {
-  return request<LicenseList>('/superadmin/licenses');
+  return request<LicenseList>('/licenses');
 }
 
 export async function getLicense(id: string) {
-  return request<License>(`/superadmin/licenses/${id}`);
+  return request<License>(`/licenses/${id}`);
+}
+
+export async function generateLicense(data: GenerateLicenseInput) {
+  return request<License>('/licenses', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
 }
 
 export async function extendLicense(id: string, months: number) {
-  return request<License>(`/superadmin/licenses/${id}/extend`, {
-    method: 'POST',
+  return request<License>(`/licenses/${id}/extend`, {
+    method: 'PATCH',
     body: JSON.stringify({ months }),
   });
 }
 
 export async function revokeLicense(id: string) {
-  return request<void>(`/superadmin/licenses/${id}/revoke`, { method: 'POST' });
+  return request<void>(`/licenses/${id}/revoke`, { method: 'POST' });
+}
+
+export interface GenerateLicenseInput {
+  customerName: string;
+  contactEmail: string;
+  tenantSlug?: string;
+  plan: string;
+  maxUsers?: number;
+  maxObjects?: number;
+  features?: string[];
+  addons?: string[];
+  expiresAt?: string;
+  deliveryModel?: 'saas' | 'on_prem' | 'dev';
 }
 
 export interface LicenseList {

@@ -17,20 +17,18 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/auth/login`, {
+      const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       });
 
+      const data = await res.json();
+
       if (!res.ok) {
-        const data = await res.json();
         throw new Error(data.message || 'Login failed');
       }
 
-      const data = await res.json();
-
-      // Check if superadmin
       if (data.user?.role !== 'superadmin') {
         throw new Error('Access denied. Super admin role required.');
       }
@@ -49,7 +47,6 @@ export default function LoginPage() {
     <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
       <div className="w-full max-w-sm">
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-8">
-          {/* Logo */}
           <div className="flex flex-col items-center gap-2 mb-8">
             <div className="w-12 h-12 bg-indigo-600 rounded-lg flex items-center justify-center">
               <Shield className="w-6 h-6 text-white" />
@@ -60,7 +57,6 @@ export default function LoginPage() {
             </p>
           </div>
 
-          {/* Error */}
           {error && (
             <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2 text-sm text-red-700">
               <AlertCircle className="w-4 h-4 shrink-0" />
@@ -68,12 +64,9 @@ export default function LoginPage() {
             </div>
           )}
 
-          {/* Form */}
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">
-                Email
-              </label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
               <input
                 type="email"
                 value={email}
@@ -86,9 +79,7 @@ export default function LoginPage() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">
-                Password
-              </label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Password</label>
               <input
                 type="password"
                 value={password}
