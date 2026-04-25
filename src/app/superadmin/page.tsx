@@ -25,7 +25,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts';
-import type { OverviewStats } from '@/lib/api';
+import { getOverviewStats, type OverviewStats } from '@/lib/api';
 
 const STATUS_COLORS = {
   active: '#10b981',
@@ -77,19 +77,9 @@ export default function OverviewPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/superadmin/stats`)
-      .then(r => {
-        if (!r.ok) throw new Error('Failed to load');
-        return r.json();
-      })
-      .then(data => {
-        setStats(data);
-        setLoading(false);
-      })
-      .catch(err => {
-        setError(err.message);
-        setLoading(false);
-      });
+    getOverviewStats()
+      .then(data => { setStats(data); setLoading(false); })
+      .catch(err => { setError(err.message); setLoading(false); });
   }, []);
 
   if (loading) {
@@ -117,44 +107,37 @@ export default function OverviewPage() {
   }
 
   const tenantBreakdown = [
-    { name: 'Active', value: stats.tenantStatusBreakdown.active, fill: STATUS_COLORS.active },
-    { name: 'Trial', value: stats.tenantStatusBreakdown.trial, fill: STATUS_COLORS.trial },
-    { name: 'Past Due', value: stats.tenantStatusBreakdown.pastDue, fill: STATUS_COLORS.pastDue },
+    { name: 'Active',    value: stats.tenantStatusBreakdown.active,   fill: STATUS_COLORS.active },
+    { name: 'Trial',     value: stats.tenantStatusBreakdown.trial,    fill: STATUS_COLORS.trial },
+    { name: 'Past Due',  value: stats.tenantStatusBreakdown.pastDue,  fill: STATUS_COLORS.pastDue },
     { name: 'Cancelled', value: stats.tenantStatusBreakdown.canceled, fill: STATUS_COLORS.canceled },
   ];
 
   return (
     <div className="p-8 space-y-8">
-      {/* Header */}
       <div>
         <h1 className="text-2xl font-semibold text-slate-900">Platform Overview</h1>
-        <p className="text-sm text-slate-500 mt-1">
-          Last updated: {new Date().toLocaleTimeString()}
-        </p>
+        <p className="text-sm text-slate-500 mt-1">Last updated: {new Date().toLocaleTimeString()}</p>
       </div>
 
-      {/* KPI Cards */}
       <div className="grid grid-cols-4 gap-4">
         <KpiCard
           label="Total Tenants"
           value={stats.totalTenants.toLocaleString()}
           sub="active + trial"
           icon={Building2}
-          trend={{ value: 12, label: 'vs last month' }}
         />
         <KpiCard
           label="Active MRR"
           value={`$${stats.activeMRR.toLocaleString()}`}
           sub={`ARR: $${stats.arr.toLocaleString()}`}
           icon={DollarSign}
-          trend={{ value: 8, label: 'vs last month' }}
         />
         <KpiCard
           label="Total Users"
           value={stats.totalUsers.toLocaleString()}
           sub="across all tenants"
           icon={Users}
-          trend={{ value: 5, label: 'vs last month' }}
         />
         <KpiCard
           label="Churn Rate"
@@ -164,9 +147,7 @@ export default function OverviewPage() {
         />
       </div>
 
-      {/* Charts Row 1 */}
       <div className="grid grid-cols-3 gap-4">
-        {/* MRR Growth */}
         <div className="bg-white rounded-xl border border-slate-200 p-5 col-span-2">
           <h3 className="text-sm font-medium text-slate-700 mb-4">MRR Growth</h3>
           <ResponsiveContainer width="100%" height={200}>
@@ -192,20 +173,12 @@ export default function OverviewPage() {
           </ResponsiveContainer>
         </div>
 
-        {/* Tenant Breakdown */}
         <div className="bg-white rounded-xl border border-slate-200 p-5">
           <h3 className="text-sm font-medium text-slate-700 mb-4">Tenant Status</h3>
           <ResponsiveContainer width="100%" height={160}>
             <PieChart>
-              <Pie
-                data={tenantBreakdown}
-                cx="50%"
-                cy="50%"
-                innerRadius={45}
-                outerRadius={70}
-                paddingAngle={3}
-                dataKey="value"
-              >
+              <Pie data={tenantBreakdown} cx="50%" cy="50%" innerRadius={45} outerRadius={70}
+                   paddingAngle={3} dataKey="value">
                 {tenantBreakdown.map((entry, i) => (
                   <Cell key={i} fill={entry.fill} />
                 ))}
@@ -227,9 +200,7 @@ export default function OverviewPage() {
         </div>
       </div>
 
-      {/* Charts Row 2 */}
       <div className="grid grid-cols-2 gap-4">
-        {/* New Signups */}
         <div className="bg-white rounded-xl border border-slate-200 p-5">
           <h3 className="text-sm font-medium text-slate-700 mb-4">Weekly Signups</h3>
           <ResponsiveContainer width="100%" height={180}>
@@ -243,7 +214,6 @@ export default function OverviewPage() {
           </ResponsiveContainer>
         </div>
 
-        {/* Churn Trend */}
         <div className="bg-white rounded-xl border border-slate-200 p-5">
           <h3 className="text-sm font-medium text-slate-700 mb-4">Churn Rate Trend</h3>
           <ResponsiveContainer width="100%" height={180}>
@@ -264,7 +234,6 @@ export default function OverviewPage() {
         </div>
       </div>
 
-      {/* System Status */}
       <div className="bg-white rounded-xl border border-slate-200 p-5">
         <div className="flex items-center gap-2 mb-4">
           <CheckCircle2 className="w-4 h-4 text-emerald-500" />
@@ -272,10 +241,10 @@ export default function OverviewPage() {
         </div>
         <div className="grid grid-cols-4 gap-3">
           {[
-            { name: 'API Server', latency: '94ms', status: 'healthy' },
-            { name: 'PostgreSQL', latency: '23ms', status: 'healthy' },
-            { name: 'Redis', latency: '1ms', status: 'healthy' },
-            { name: 'SMTP', latency: '—', status: 'healthy' },
+            { name: 'API Server', latency: '—', status: 'healthy' },
+            { name: 'PostgreSQL', latency: '—', status: 'healthy' },
+            { name: 'Redis',      latency: '—', status: 'healthy' },
+            { name: 'SMTP',       latency: '—', status: 'healthy' },
           ].map(service => (
             <div key={service.name} className="p-3 bg-slate-50 rounded-lg">
               <div className="flex items-center gap-2 mb-1">
