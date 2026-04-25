@@ -4,6 +4,11 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Shield, AlertCircle } from 'lucide-react';
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '';
+const LOGIN_URL = API_BASE
+  ? `${API_BASE}/superadmin/login`
+  : '/api/superadmin/login';
+
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState('');
@@ -17,7 +22,7 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const res = await fetch('/api/superadmin/login', {
+      const res = await fetch(LOGIN_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
