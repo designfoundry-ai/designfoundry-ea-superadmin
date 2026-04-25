@@ -13,17 +13,6 @@ concurrency:
   group: deploy-production
   cancel-in-progress: true
 
-env:
-  GCP_REGION: ${{ vars.GCP_REGION }}
-  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-  ARTIFACT_REGISTRY_REPO: ${{ vars.ARTIFACT_REGISTRY_REPO }}
-  CLOUD_RUN_SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
-  SUPERADMIN_SERVICE_ACCOUNT: ${{ vars.SUPERADMIN_SERVICE_ACCOUNT }}
-  GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-  GCP_DEPLOYER_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
-  NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
-  JWT_SECRET_NAME: ${{ vars.JWT_SECRET_NAME || 'superadmin-jwt-secret' }}
-
 jobs:
   build:
     name: Build & Push
@@ -41,22 +30,21 @@ jobs:
           TAG="${GITHUB_SHA}"
           echo "image_tag=$TAG" >> "$GITHUB_OUTPUT"
 
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Authenticate to Google Cloud
-        id: auth
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ env.GCP_DEPLOYER_SERVICE_ACCOUNT }}
-
-      - name: Login to Artifact Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.GCP_REGION }}-docker.pkg.dev
-          username: oauth2accesstoken
-          password: ${{ steps.auth.outputs.access_token }}
+      - name: Log into Artifact Registry
+        shell: bash
+        env:
+          REGION: ${{ vars.GCP_REGION }}
+        run: |
+          echo "${{ steps.auth.outputs.access_token }}" | docker login ${REGION}-docker.pkg.dev -u oauth2accesstoken --password-stdin
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -64,13 +52,13 @@ jobs:
           context: .
           file: Dockerfile
           tags: |
-            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY_REPO }}/designfoundry-ea-superadmin:${{ steps.meta.outputs.image_tag }}
-            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY_REPO }}/designfoundry-ea-superadmin:latest
+            ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REGISTRY_REPO }}/designfoundry-ea-superadmin:${{ steps.meta.outputs.image_tag }}
+            ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REGISTRY_REPO }}/designfoundry-ea-superadmin:latest
           push: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
-            NEXT_PUBLIC_API_URL=${{ env.NEXT_PUBLIC_API_URL }}
+            NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL }}
 
   deploy:
     name: Deploy to Cloud Run
@@ -84,29 +72,29 @@ jobs:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ env.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
 
       - name: Set up gcloud
         uses: google-github-actions/setup-gcloud@v2
         with:
-          project_id: ${{ env.GCP_PROJECT_ID }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
 
       - name: Configure Docker auth for Artifact Registry
         shell: bash
         run: |
-          gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+          gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
 
       - name: Deploy to Cloud Run
         shell: bash
         run: |
-          gcloud run deploy "${{ env.CLOUD_RUN_SERVICE }}" \
-            --image="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY_REPO }}/designfoundry-ea-superadmin:${{ needs.build.outputs.image_tag }}" \
-            --region="${{ env.GCP_REGION }}" \
+          gcloud run deploy "${{ vars.CLOUD_RUN_SERVICE }}" \
+            --image="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REGISTRY_REPO }}/designfoundry-ea-superadmin:${{ needs.build.outputs.image_tag }}" \
+            --region="${{ vars.GCP_REGION }}" \
             --platform=managed \
-            --service-account="${{ env.SUPERADMIN_SERVICE_ACCOUNT }}" \
-            --set-env-vars="NODE_ENV=production,NEXT_PUBLIC_API_URL=${{ env.NEXT_PUBLIC_API_URL }}" \
-            --set-secrets="JWT_SECRET=${{ env.JWT_SECRET_NAME }}:latest" \
+            --service-account="${{ vars.SUPERADMIN_SERVICE_ACCOUNT }}" \
+            --set-env-vars="NODE_ENV=production,NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL }}" \
+            --set-secrets="JWT_SECRET=${{ vars.JWT_SECRET_NAME || 'superadmin-jwt-secret' }}:latest" \
             --min-instances=0 \
             --max-instances=2 \
             --memory=512Mi \
@@ -118,8 +106,8 @@ jobs:
         id: url
         shell: bash
         run: |
-          URL=$(gcloud run services describe "${{ env.CLOUD_RUN_SERVICE }}" \
-            --region="${{ env.GCP_REGION }}" \
+          URL=$(gcloud run services describe "${{ vars.CLOUD_RUN_SERVICE }}" \
+            --region="${{ vars.GCP_REGION }}" \
             --format="value(status.url)")
           echo "service_url=$URL" >> "$GITHUB_OUTPUT"
 
@@ -130,5 +118,5 @@ jobs:
             echo "## Super Admin — Production Deploy"
             echo "- Image tag: ${{ needs.build.outputs.image_tag }}"
             echo "- Service URL: ${{ steps.url.outputs.service_url }}"
-            echo "- API URL: ${{ env.NEXT_PUBLIC_API_URL }}"
+            echo "- API URL: ${{ vars.NEXT_PUBLIC_API_URL }}"
           } >> "$GITHUB_STEP_SUMMARY"
