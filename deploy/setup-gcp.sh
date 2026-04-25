@@ -10,7 +10,7 @@ set -euo pipefail
 PROJECT_ID="${GCP_PROJECT_ID:?Set GCP_PROJECT_ID}"
 REGION="${GCP_REGION:-europe-central2}"
 ARTIFACT_REPO="${ARTIFACT_REPO:-superadmin}"
-CLOUD_RUN_SERVICE="${CLOUD_RUN_SERVICE:-designfoundry-ea-superadmin}"
+CLOUD_RUN_SERVICE="${CLOUD_RUN_SERVICE:-designfoundry-admin}"
 SUPERADMIN_SA="designfoundry-superadmin"
 GITHUB_DEPLOYER_SA="github-deployer"
 WORKLOAD_IDENTITY_POOL="superadmin-pool"
