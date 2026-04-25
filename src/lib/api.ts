@@ -165,7 +165,7 @@ export async function getAllUsers(params?: UserFilters) {
 }
 
 export async function getTenantUsers(tenantId: string) {
-  return request<UserList>(`/superadmin/tenants/${tenantId}/users`);
+  return request<UserList>(`/superadmin/users?tenantId=${encodeURIComponent(tenantId)}`);
 }
 
 export async function disableUser(id: string) {
