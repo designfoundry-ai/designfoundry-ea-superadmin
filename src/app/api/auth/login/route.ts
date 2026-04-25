@@ -11,6 +11,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ message: 'Email and password required' }, { status: 400 });
     }
 
+    // Enforce @designfoundry.ai workspace domain
+    if (!email.endsWith('@designfoundry.ai')) {
+      return NextResponse.json(
+        { message: 'Access restricted to @designfoundry.ai accounts only' },
+        { status: 403 },
+      );
+    }
+
     const { rows } = await pool.query<{ id: string; email: string; password_hash: string }>(
       `SELECT id, email, password_hash FROM super_admins WHERE email = $1`,
       [email],
