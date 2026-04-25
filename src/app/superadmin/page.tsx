@@ -25,13 +25,19 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts';
-import { getOverviewStats, type OverviewStats } from '@/lib/api';
+import { getOverviewStats, getSystemHealth, type OverviewStats, type SystemHealth } from '@/lib/api';
 
 const STATUS_COLORS = {
   active: '#10b981',
   trial: '#f59e0b',
   pastDue: '#ef4444',
   canceled: '#64748b',
+};
+
+const SERVICE_DOT: Record<'healthy' | 'degraded' | 'down', string> = {
+  healthy: 'bg-emerald-500',
+  degraded: 'bg-amber-500',
+  down: 'bg-red-500',
 };
 
 function KpiCard({
@@ -73,6 +79,8 @@ function KpiCard({
 
 export default function OverviewPage() {
   const [stats, setStats] = useState<OverviewStats | null>(null);
+  const [health, setHealth] = useState<SystemHealth | null>(null);
+  const [healthError, setHealthError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -80,6 +88,9 @@ export default function OverviewPage() {
     getOverviewStats()
       .then(data => { setStats(data); setLoading(false); })
       .catch(err => { setError(err.message); setLoading(false); });
+    getSystemHealth()
+      .then(data => setHealth(data))
+      .catch(err => setHealthError(err.message));
   }, []);
 
   if (loading) {
@@ -236,25 +247,39 @@ export default function OverviewPage() {
 
       <div className="bg-white rounded-xl border border-slate-200 p-5">
         <div className="flex items-center gap-2 mb-4">
-          <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+          {health && health.services.every(s => s.status === 'healthy') ? (
+            <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+          ) : (
+            <AlertTriangle className="w-4 h-4 text-amber-500" />
+          )}
           <h3 className="text-sm font-medium text-slate-700">System Status</h3>
+          {healthError && (
+            <span className="text-xs text-red-500 ml-2">{healthError}</span>
+          )}
         </div>
-        <div className="grid grid-cols-4 gap-3">
-          {[
-            { name: 'API Server', latency: '—', status: 'healthy' },
-            { name: 'PostgreSQL', latency: '—', status: 'healthy' },
-            { name: 'Redis',      latency: '—', status: 'healthy' },
-            { name: 'SMTP',       latency: '—', status: 'healthy' },
-          ].map(service => (
-            <div key={service.name} className="p-3 bg-slate-50 rounded-lg">
-              <div className="flex items-center gap-2 mb-1">
-                <div className="w-2 h-2 rounded-full bg-emerald-500" />
-                <span className="text-sm font-medium text-slate-700">{service.name}</span>
+        {!health && !healthError && (
+          <div className="grid grid-cols-4 gap-3">
+            {[...Array(3)].map((_, i) => (
+              <div key={i} className="h-14 bg-slate-50 rounded-lg animate-pulse" />
+            ))}
+          </div>
+        )}
+        {health && (
+          <div className="grid grid-cols-4 gap-3">
+            {health.services.map(service => (
+              <div key={service.name} className="p-3 bg-slate-50 rounded-lg">
+                <div className="flex items-center gap-2 mb-1">
+                  <div className={`w-2 h-2 rounded-full ${SERVICE_DOT[service.status]}`} />
+                  <span className="text-sm font-medium text-slate-700">{service.name}</span>
+                </div>
+                <p className="text-xs text-slate-400">
+                  {service.latencyMs >= 0 ? `${service.latencyMs}ms` : 'unreachable'}
+                  {service.uptime && service.uptime !== '—' ? ` · ${service.uptime}` : ''}
+                </p>
               </div>
-              <p className="text-xs text-slate-400">{service.latency}</p>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

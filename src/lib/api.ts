@@ -2,9 +2,11 @@
  * DesignFoundry Super Admin Console — API Client
  *
  * Requests go to the rezonator backend at NEXT_PUBLIC_API_URL when set
- * (e.g. http://localhost:3001/api/v1), otherwise to local Next.js mock
- * routes under /api. Endpoints live under /superadmin/* on the backend.
- * Auth: Bearer token with role=superadmin.
+ * (e.g. http://localhost:3001/api/v1). When unset, requests fall through to
+ * the dev-only Next.js routes under /api/superadmin/* that query Postgres
+ * directly — these are blocked by middleware in any env where
+ * NEXT_PUBLIC_API_URL is configured. Endpoints live under /superadmin/* on
+ * the backend. Auth: Bearer token with role=superadmin.
  */
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '/api';

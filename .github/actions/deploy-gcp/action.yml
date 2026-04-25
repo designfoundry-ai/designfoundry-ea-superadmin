@@ -80,6 +80,23 @@ runs:
       run: |
         gcloud auth configure-docker ${{ inputs.gcp_region }}-docker.pkg.dev --quiet
 
+    - name: Load image from artifact
+      shell: bash
+      run: |
+        docker load -i /tmp/artifacts/designfoundry-ea-superadmin.tar
+
+    - name: Tag and push image to Artifact Registry
+      shell: bash
+      env:
+        IMAGE_TAG: ${{ inputs.image_tag }}
+        REGION: ${{ inputs.gcp_region }}
+        PROJECT: ${{ inputs.gcp_project_id }}
+        REPO: ${{ inputs.artifact_registry_repo }}
+      run: |
+        docker tag designfoundry-ea-superadmin:$IMAGE_TAG \
+          $REGION-docker.pkg.dev/$PROJECT/$REPO/designfoundry-ea-superadmin:$IMAGE_TAG
+        docker push $REGION-docker.pkg.dev/$PROJECT/$REPO/designfoundry-ea-superadmin:$IMAGE_TAG
+
     - name: Deploy to Cloud Run
       id: deploy
       shell: bash

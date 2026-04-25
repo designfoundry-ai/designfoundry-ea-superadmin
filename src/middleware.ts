@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
+// The /api/superadmin/* Next.js routes are a dev-only fallback that queries
+// Postgres directly. In production (and any env where NEXT_PUBLIC_API_URL is
+// set), the React app talks to the rezonator NestJS backend instead, so this
+// middleware blocks the local routes to prevent silently diverging code paths.
 const REAL_BACKEND = process.env.NEXT_PUBLIC_API_URL;
 
 export function middleware(req: NextRequest) {
@@ -19,8 +23,8 @@ export function middleware(req: NextRequest) {
   return NextResponse.json(
     {
       message:
-        'Local mock API is disabled because NEXT_PUBLIC_API_URL is set. ' +
-        'Requests should go to the real backend.',
+        'Dev-only fallback API disabled because NEXT_PUBLIC_API_URL is set. ' +
+        'Requests should go to the rezonator backend.',
     },
     { status: 410 }
   );
