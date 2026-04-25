@@ -1,0 +1,124 @@
+name: Deploy to GCP
+
+description: >
+  GCP deployment adapter for DesignFoundry Superadmin GitHub-native CD.
+  Single-service variant (no backend/frontend split).
+
+inputs:
+  environment_name:
+    required: true
+    description: Logical environment name (e.g. staging, production)
+  image_tag:
+    required: true
+    description: Immutable image tag / artifact version
+  gcp_project_id:
+    required: true
+    description: GCP project id
+  gcp_region:
+    required: true
+    description: GCP region
+  artifact_registry_repo:
+    required: true
+    description: Artifact Registry repository name
+  cloud_run_service:
+    required: true
+    description: Cloud Run service name
+  service_account:
+    required: true
+    description: Cloud Run service service account email
+  next_public_api_url:
+    required: false
+    description: Platform API URL for NEXT_PUBLIC_API_URL
+    default: http://localhost:3001/api/v1
+  jwt_secret_name:
+    required: false
+    description: Secret Manager secret name for JWT secret
+    default: superadmin-jwt-secret
+  gcp_workload_identity_provider:
+    required: true
+    description: Workload Identity Provider resource name
+  gcp_deployer_service_account:
+    required: true
+    description: Service account used by GitHub Actions for deployment
+
+runs:
+  using: composite
+  steps:
+    - name: Validate required config
+      shell: bash
+      run: |
+        missing=0
+        for var in \
+          "${{ inputs.gcp_project_id }}" \
+          "${{ inputs.gcp_region }}" \
+          "${{ inputs.artifact_registry_repo }}" \
+          "${{ inputs.cloud_run_service }}" \
+          "${{ inputs.service_account }}"; do
+          if [ -z "$var" ]; then
+            echo "ERROR: Missing required input: '$var'"
+            missing=1
+          fi
+        done
+        if [ "$missing" -ne 0 ]; then
+          echo "Missing required GCP adapter inputs. Configure GitHub Environment variables before enabling deployment."
+          exit 1
+        fi
+
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        workload_identity_provider: ${{ inputs.gcp_workload_identity_provider }}
+        service_account: ${{ inputs.gcp_deployer_service_account }}
+
+    - name: Set up gcloud
+      uses: google-github-actions/setup-gcloud@v2
+      with:
+        project_id: ${{ inputs.gcp_project_id }}
+
+    - name: Configure Docker auth for Artifact Registry
+      shell: bash
+      run: |
+        gcloud auth configure-docker ${{ inputs.gcp_region }}-docker.pkg.dev --quiet
+
+    - name: Deploy to Cloud Run
+      id: deploy
+      shell: bash
+      env:
+        IMAGE: "${{ inputs.gcp_region }}-docker.pkg.dev/${{ inputs.gcp_project_id }}/${{ inputs.artifact_registry_repo }}/designfoundry-ea-superadmin:${{ inputs.image_tag }}"
+      run: |
+        echo "==> Deploying to Cloud Run..."
+        echo "    Image: $IMAGE"
+
+        DEPLOY_CMD="gcloud run deploy '${{ inputs.cloud_run_service }}' \
+          --image='$IMAGE' \
+          --region='${{ inputs.gcp_region }}' \
+          --platform=managed \
+          --service-account='${{ inputs.service_account }}' \
+          --min-instances=0 \
+          --max-instances=2 \
+          --memory=512Mi \
+          --cpu=1 \
+          --port=3000 \
+          --allow-unauthenticated"
+
+        # Add env vars
+        DEPLOY_CMD="$DEPLOY_CMD --set-env-vars='NODE_ENV=production,NEXT_PUBLIC_API_URL=${{ inputs.next_public_api_url }}'"
+
+        # Add secrets if provided
+        if [ -n "${{ inputs.jwt_secret_name }}" ]; then
+          DEPLOY_CMD="$DEPLOY_CMD --set-secrets=JWT_SECRET=${{ inputs.jwt_secret_name }}:latest"
+        fi
+
+        echo "    Command: $DEPLOY_CMD"
+        eval "$DEPLOY_CMD"
+
+    - name: Get Cloud Run URL
+      id: url
+      shell: bash
+      run: |
+        URL=$(gcloud run services describe "${{ inputs.cloud_run_service }}" \
+          --region="${{ inputs.gcp_region }}" \
+          --format="value(status.url)" \
+          --project="${{ inputs.gcp_project_id }}")
+        echo "service_url=$URL" >> "$GITHUB_OUTPUT"
+        echo "==> Service URL: $URL"
