@@ -41,10 +41,9 @@ jobs:
 
       - name: Log into Artifact Registry
         shell: bash
-        env:
-          REGION: ${{ vars.GCP_REGION }}
         run: |
-          echo "${{ steps.auth.outputs.access_token }}" | docker login ${REGION}-docker.pkg.dev -u oauth2accesstoken --password-stdin
+          TOKEN=$(gcloud auth print-access-token)
+          echo "$TOKEN" | docker login europe-central2-docker.pkg.dev -u oauth2accesstoken --password-stdin
 
       - name: Build and push
         uses: docker/build-push-action@v6
