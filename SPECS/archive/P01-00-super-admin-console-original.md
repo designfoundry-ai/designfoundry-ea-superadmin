@@ -4,7 +4,7 @@
 **Title:** Super Admin Console — Standalone `designfoundry-superadmin` Application  
 **Release:** R1  
 **Priority:** P1  
-**Status:** Draft  
+**Status:** Partially Implemented (FE scaffold + API client done; backend + pages in progress)  
 **Created:** 2026-04-18  
 **Updated:** 2026-04-18  
 **Spec Owner:** TBD  
