@@ -1,141 +1,94 @@
 name: Deploy to GCP
-
-description: >
-  GCP deployment adapter for DesignFoundry Superadmin GitHub-native CD.
-  Single-service variant (no backend/frontend split).
-
+description: Build, push to Artifact Registry, and deploy to Cloud Run
 inputs:
-  environment_name:
+  google_cloud_credentials:
+    description: JSON credentials for Google Cloud
     required: true
-    description: Logical environment name (e.g. staging, production)
-  image_tag:
+  google_cloud_workload_identity_provider:
+    description: Workload Identity Provider resource path
     required: true
-    description: Immutable image tag / artifact version
-  gcp_project_id:
+  google_cloud_service_account:
+    description: Service account to impersonate
     required: true
-    description: GCP project id
-  gcp_region:
-    required: true
-    description: GCP region
   artifact_registry_repo:
+    description: Artifact Registry repository (e.g. superadmin)
     required: true
-    description: Artifact Registry repository name
+  region:
+    description: GCP region
+    required: true
+  project_id:
+    description: GCP project ID
+    required: true
   cloud_run_service:
-    required: true
     description: Cloud Run service name
-  service_account:
     required: true
-    description: Cloud Run service service account email
+  runtime_service_account:
+    description: Service account for Cloud Run runtime
+    required: true
   next_public_api_url:
+    description: Next public API URL
     required: false
-    description: Platform API URL for NEXT_PUBLIC_API_URL
-    default: http://localhost:3001/api/v1
+    default: ""
   jwt_secret_name:
+    description: JWT secret name in Secret Manager
     required: false
-    description: Secret Manager secret name for JWT secret
-    default: superadmin-jwt-secret
-  gcp_workload_identity_provider:
-    required: true
-    description: Workload Identity Provider resource name
-  gcp_deployer_service_account:
-    required: true
-    description: Service account used by GitHub Actions for deployment
+    default: "superadmin-jwt-secret"
 
 runs:
   using: composite
   steps:
-    - name: Validate required config
-      shell: bash
-      run: |
-        missing=0
-        for var in \
-          "${{ inputs.gcp_project_id }}" \
-          "${{ inputs.gcp_region }}" \
-          "${{ inputs.artifact_registry_repo }}" \
-          "${{ inputs.cloud_run_service }}" \
-          "${{ inputs.service_account }}"; do
-          if [ -z "$var" ]; then
-            echo "ERROR: Missing required input: '$var'"
-            missing=1
-          fi
-        done
-        if [ "$missing" -ne 0 ]; then
-          echo "Missing required GCP adapter inputs. Configure GitHub Environment variables before enabling deployment."
-          exit 1
-        fi
-
     - name: Authenticate to Google Cloud
       uses: google-github-actions/auth@v2
       with:
-        workload_identity_provider: ${{ inputs.gcp_workload_identity_provider }}
-        service_account: ${{ inputs.gcp_deployer_service_account }}
+        workload_identity_provider: ${{ inputs.google_cloud_workload_identity_provider }}
+        service_account: ${{ inputs.google_cloud_service_account }}
 
-    - name: Set up gcloud
-      uses: google-github-actions/setup-gcloud@v2
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Login to Artifact Registry
+      uses: docker/login-action@v3
       with:
-        project_id: ${{ inputs.gcp_project_id }}
+        registry: ${{ inputs.region }}-docker.pkg.dev
+        username: oauth2accesstoken
+        password: ${{ steps.auth.outputs.access_token }}
 
-    - name: Configure Docker auth for Artifact Registry
-      shell: bash
-      run: |
-        gcloud auth configure-docker ${{ inputs.gcp_region }}-docker.pkg.dev --quiet
-
-    - name: Load image from artifact
-      shell: bash
-      run: |
-        docker load -i /tmp/artifacts/designfoundry-ea-superadmin.tar
-
-    - name: Tag and push image to Artifact Registry
-      shell: bash
-      env:
-        IMAGE_TAG: ${{ inputs.image_tag }}
-        REGION: ${{ inputs.gcp_region }}
-        PROJECT: ${{ inputs.gcp_project_id }}
-        REPO: ${{ inputs.artifact_registry_repo }}
-      run: |
-        docker tag designfoundry-ea-superadmin:$IMAGE_TAG \
-          $REGION-docker.pkg.dev/$PROJECT/$REPO/designfoundry-ea-superadmin:$IMAGE_TAG
-        docker push $REGION-docker.pkg.dev/$PROJECT/$REPO/designfoundry-ea-superadmin:$IMAGE_TAG
+    - name: Build and push
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: Dockerfile
+        tags: |
+          ${{ inputs.region }}-docker.pkg.dev/${{ inputs.project_id }}/${{ inputs.artifact_registry_repo }}/designfoundry-ea-superadmin:${{ steps.meta.outputs.image_tag }}
+          ${{ inputs.region }}-docker.pkg.dev/${{ inputs.project_id }}/${{ inputs.artifact_registry_repo }}/designfoundry-ea-superadmin:latest
+        push: true
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        build-args: |
+          NEXT_PUBLIC_API_URL=${{ inputs.next_public_api_url }}
 
     - name: Deploy to Cloud Run
-      id: deploy
       shell: bash
-      env:
-        IMAGE: "${{ inputs.gcp_region }}-docker.pkg.dev/${{ inputs.gcp_project_id }}/${{ inputs.artifact_registry_repo }}/designfoundry-ea-superadmin:${{ inputs.image_tag }}"
       run: |
-        echo "==> Deploying to Cloud Run..."
-        echo "    Image: $IMAGE"
-
-        DEPLOY_CMD="gcloud run deploy '${{ inputs.cloud_run_service }}' \
-          --image='$IMAGE' \
-          --region='${{ inputs.gcp_region }}' \
+        gcloud run deploy "${{ inputs.cloud_run_service }}" \
+          --image="${{ inputs.region }}-docker.pkg.dev/${{ inputs.project_id }}/${{ inputs.artifact_registry_repo }}/designfoundry-ea-superadmin:${{ steps.meta.outputs.image_tag }}" \
+          --region="${{ inputs.region }}" \
           --platform=managed \
-          --service-account='${{ inputs.service_account }}' \
+          --service-account="${{ inputs.runtime_service_account }}" \
+          --set-env-vars="NODE_ENV=production,NEXT_PUBLIC_API_URL=${{ inputs.next_public_api_url }}" \
+          --set-secrets="JWT_SECRET=${{ inputs.jwt_secret_name }}:latest" \
           --min-instances=0 \
           --max-instances=2 \
           --memory=512Mi \
           --cpu=1 \
           --port=3000 \
-          --allow-unauthenticated"
-
-        # Add env vars
-        DEPLOY_CMD="$DEPLOY_CMD --set-env-vars='NODE_ENV=production,NEXT_PUBLIC_API_URL=${{ inputs.next_public_api_url }}'"
-
-        # Add secrets if provided
-        if [ -n "${{ inputs.jwt_secret_name }}" ]; then
-          DEPLOY_CMD="$DEPLOY_CMD --set-secrets=JWT_SECRET=${{ inputs.jwt_secret_name }}:latest"
-        fi
-
-        echo "    Command: $DEPLOY_CMD"
-        eval "$DEPLOY_CMD"
+          --allow-unauthenticated
 
     - name: Get Cloud Run URL
       id: url
       shell: bash
       run: |
         URL=$(gcloud run services describe "${{ inputs.cloud_run_service }}" \
-          --region="${{ inputs.gcp_region }}" \
-          --format="value(status.url)" \
-          --project="${{ inputs.gcp_project_id }}")
+          --region="${{ inputs.region }}" \
+          --format="value(status.url)")
         echo "service_url=$URL" >> "$GITHUB_OUTPUT"
-        echo "==> Service URL: $URL"
