@@ -10,10 +10,16 @@ export async function GET(req: NextRequest) {
     const page = Math.max(1, parseInt(sp.get('page') ?? '1', 10));
     const limit = Math.min(100, Math.max(1, parseInt(sp.get('limit') ?? '50', 10)));
     const search = sp.get('search') ?? '';
+    const tenantId = sp.get('tenantId');
 
-    const tenants = await pool.query<{ id: string; name: string; slug: string }>(
-      `SELECT id, name, slug FROM tenants WHERE is_active = true ORDER BY name`,
-    );
+    const tenants = tenantId
+      ? await pool.query<{ id: string; name: string; slug: string }>(
+          `SELECT id, name, slug FROM tenants WHERE is_active = true AND id = $1`,
+          [tenantId],
+        )
+      : await pool.query<{ id: string; name: string; slug: string }>(
+          `SELECT id, name, slug FROM tenants WHERE is_active = true ORDER BY name`,
+        );
 
     const allUsers: Array<{
       id: string; name: string; email: string; tenantId: string; tenantName: string;
