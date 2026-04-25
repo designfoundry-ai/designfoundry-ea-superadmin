@@ -51,6 +51,7 @@ jobs:
     name: Deploy to Cloud Run
     runs-on: ubuntu-latest
     needs: build
+    environment: production
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -78,8 +79,9 @@ jobs:
             --image="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REGISTRY_REPO }}/designfoundry-ea-superadmin:${{ needs.build.outputs.image_tag }}" \
             --region="${{ vars.GCP_REGION }}" \
             --platform=managed \
-            --service-account="${{ vars.GCP_FRONTEND_SERVICE_ACCOUNT }}" \
+            --service-account="${{ vars.SUPERADMIN_SERVICE_ACCOUNT }}" \
             --set-env-vars="NODE_ENV=production,NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL }}" \
+            --set-secrets="JWT_SECRET=${{ vars.JWT_SECRET_NAME || 'superadmin-jwt-secret' }}:latest" \
             --min-instances=0 \
             --max-instances=2 \
             --memory=512Mi \

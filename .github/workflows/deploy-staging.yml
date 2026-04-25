@@ -104,4 +104,4 @@ jobs:
             echo "- Image tag: ${{ needs.package.outputs.image_tag }}"
             echo "- Service URL: ${{ steps.url.outputs.service_url }}"
             echo "- API URL: ${{ vars.STAGING_NEXT_PUBLIC_API_URL || 'http://localhost:3001/api/v1' }}"
-          } >> "$GITHOP_STEP_SUMMARY"
+          } >> "$GITHUB_STEP_SUMMARY"
