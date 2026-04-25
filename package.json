@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start -p 3002",
     "lint": "eslint",
-    "keys:generate": "node scripts/generate-keys.js"
+    "keys:generate": "node scripts/generate-keys.js",
+    "db:admin:init": "node scripts/init-admin-db.mjs"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

@@ -508,6 +508,120 @@ export interface FeatureFlag {
   defaultEnabled: boolean;
 }
 
+// ─── Instances (Superadmin own DB — never proxied) ───────────────────
+
+const INSTANCES_BASE = '/api/superadmin/instances';
+
+async function instancesRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const token = typeof window !== 'undefined'
+    ? localStorage.getItem('superadmin_token')
+    : null;
+  const res = await fetch(`${INSTANCES_BASE}${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...options.headers,
+    },
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    throw new ApiError(body.error || body.message || 'API error', res.status, body.code);
+  }
+  if (res.status === 204) return undefined as T;
+  return res.json();
+}
+
+export type InstanceEnvironment = 'production' | 'staging' | 'dev';
+
+export type InstanceStatus = 'pending' | 'active' | 'inactive' | 'deactivated';
+
+export interface Instance {
+  id: string;
+  name: string;
+  url: string;
+  environment: InstanceEnvironment;
+  status: InstanceStatus;
+  lastHealthCheck: string | null;
+  lastHealthStatus: 'healthy' | 'unhealthy' | 'unknown' | null;
+  instanceVersion: string | null;
+  hasPendingKey: boolean;
+  keyRotatedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface InstanceCreated extends Instance {
+  apiKey: string;
+  apiKeyWarning: string;
+}
+
+export interface InstanceTestResult {
+  ok: boolean;
+  status?: InstanceStatus;
+  lastHealthCheck?: string | null;
+  instanceVersion?: string | null;
+  latencyMs?: number;
+  code?: string;
+  error?: string;
+}
+
+export interface RotateKeyResult {
+  id: string;
+  apiKey: string;
+  apiKeyWarning: string;
+  hasPendingKey: boolean;
+}
+
+export async function listInstances(): Promise<{ instances: Instance[]; total: number }> {
+  return instancesRequest('');
+}
+
+export async function createInstance(input: {
+  name: string;
+  url: string;
+  environment: InstanceEnvironment;
+}): Promise<InstanceCreated> {
+  return instancesRequest('', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getInstanceDetail(id: string): Promise<Instance> {
+  return instancesRequest(`/${id}`);
+}
+
+export async function testInstance(
+  id: string,
+  opts: { pending?: boolean } = {},
+): Promise<InstanceTestResult> {
+  const qs = opts.pending ? '?pending=true' : '';
+  try {
+    return await instancesRequest(`/${id}/test${qs}`, { method: 'POST' });
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 502) {
+      return { ok: false, error: err.message, code: err.code };
+    }
+    throw err;
+  }
+}
+
+export async function rotateInstanceKey(id: string): Promise<RotateKeyResult> {
+  return instancesRequest(`/${id}/rotate-key`, { method: 'POST' });
+}
+
+export async function commitInstanceKeyRotation(id: string): Promise<Instance> {
+  return instancesRequest(`/${id}/rotate-key`, {
+    method: 'POST',
+    body: JSON.stringify({ action: 'commit' }),
+  });
+}
+
+export async function deactivateInstance(id: string): Promise<void> {
+  return instancesRequest(`/${id}`, { method: 'DELETE' });
+}
+
 // ─── Admin Audit Log ──────────────────────────────────────────────────
 
 export async function getAdminAuditLog(params?: AdminAuditFilters) {

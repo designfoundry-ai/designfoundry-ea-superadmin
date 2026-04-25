@@ -10,6 +10,7 @@ import {
   Users,
   Activity,
   Server,
+  Network,
   LifeBuoy,
   Settings,
   ScrollText,
@@ -20,6 +21,7 @@ import { clsx } from 'clsx';
 
 const navItems = [
   { href: '/superadmin', icon: LayoutDashboard, label: 'Overview', exact: true },
+  { href: '/superadmin/instances', icon: Network, label: 'Instances' },
   { href: '/superadmin/tenants', icon: Building2, label: 'Tenants' },
   { href: '/superadmin/billing', icon: CreditCard, label: 'Billing' },
   { href: '/superadmin/licenses', icon: KeyRound, label: 'Licenses' },
