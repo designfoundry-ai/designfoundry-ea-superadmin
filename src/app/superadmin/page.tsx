@@ -8,7 +8,6 @@ import {
   TrendingDown,
   AlertTriangle,
   CheckCircle2,
-  Activity,
 } from 'lucide-react';
 import {
   AreaChart,
@@ -181,7 +180,7 @@ export default function OverviewPage() {
               <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
               <XAxis dataKey="month" tick={{ fontSize: 12, fill: '#94a3b8' }} />
               <YAxis tick={{ fontSize: 12, fill: '#94a3b8' }} tickFormatter={v => `$${v}`} />
-              <Tooltip formatter={(v: number) => [`$${v.toLocaleString()}`, 'MRR']} />
+              <Tooltip formatter={(v: unknown) => [`$${Number(v).toLocaleString()}`, 'MRR']} />
               <Area
                 type="monotone"
                 dataKey="mrr"
@@ -252,7 +251,7 @@ export default function OverviewPage() {
               <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
               <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#94a3b8' }} />
               <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} tickFormatter={v => `${v}%`} />
-              <Tooltip formatter={(v: number) => [`${v}%`, 'Churn']} />
+              <Tooltip formatter={(v: unknown) => [`${v}%`, 'Churn']} />
               <Line
                 type="monotone"
                 dataKey="rate"

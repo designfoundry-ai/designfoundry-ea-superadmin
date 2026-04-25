@@ -14,22 +14,24 @@ export default function SuperAdminLayout({ children }: { children: React.ReactNo
     const user = localStorage.getItem('superadmin_user');
 
     if (!token || !user) {
-      router.push('/login');
+      void router.push('/login');
       return;
     }
 
     try {
       const userData = JSON.parse(user);
       if (userData.role !== 'superadmin') {
-        router.push('/login');
+        void router.push('/login');
         return;
       }
     } catch {
-      router.push('/login');
+      void router.push('/login');
       return;
     }
 
-    setChecking(false);
+    // Defer setChecking to avoid calling setState synchronously in effect body
+    const timeout = setTimeout(() => setChecking(false), 0);
+    return () => clearTimeout(timeout);
   }, [router]);
 
   if (checking) {
