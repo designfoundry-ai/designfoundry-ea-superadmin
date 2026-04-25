@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api/v1';
+const IS_DEV = process.env.NODE_ENV !== 'production';
 
 const DEV_CREDENTIALS = {
   email: 'super@designfoundry.app',
@@ -13,6 +14,13 @@ const DEV_USER = {
   name: 'Super Admin',
   role: 'superadmin',
 };
+
+function devSuccessResponse() {
+  return NextResponse.json({
+    token: 'dev-token-superadmin',
+    user: DEV_USER,
+  });
+}
 
 export async function POST(request: NextRequest) {
   let body: { email?: string; password?: string };
@@ -29,7 +37,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ message: 'Email and password are required' }, { status: 400 });
   }
 
-  // Try to proxy to real backend first
+  // In dev, accept the dev credentials before trying the backend.
+  // Without this, a reachable backend that doesn't know these creds
+  // would return 401 and block local development.
+  if (IS_DEV && email === DEV_CREDENTIALS.email && password === DEV_CREDENTIALS.password) {
+    return devSuccessResponse();
+  }
+
   try {
     const res = await fetch(`${BACKEND_URL}/auth/login`, {
       method: 'POST',
@@ -37,7 +51,12 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify({ email, password }),
     });
 
-    const data = await res.json();
+    let data: { message?: string; user?: { role?: string }; token?: string } = {};
+    try {
+      data = await res.json();
+    } catch {
+      // Non-JSON response — treat as failure and fall through to error path below.
+    }
 
     if (!res.ok) {
       return NextResponse.json(
@@ -55,18 +74,9 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json(data);
   } catch {
-    // Backend unreachable — fall back to dev credentials in non-production
-    if (process.env.NODE_ENV === 'production') {
-      return NextResponse.json({ message: 'Authentication service unavailable' }, { status: 503 });
+    if (IS_DEV) {
+      return NextResponse.json({ message: 'Invalid credentials' }, { status: 401 });
     }
-
-    if (email === DEV_CREDENTIALS.email && password === DEV_CREDENTIALS.password) {
-      return NextResponse.json({
-        token: 'dev-token-superadmin',
-        user: DEV_USER,
-      });
-    }
-
-    return NextResponse.json({ message: 'Invalid credentials' }, { status: 401 });
+    return NextResponse.json({ message: 'Authentication service unavailable' }, { status: 503 });
   }
 }
