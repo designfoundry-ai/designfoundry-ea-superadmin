@@ -42,17 +42,64 @@ async function run(): Promise<void> {
 
   await adminPool.query(`
     CREATE TABLE IF NOT EXISTS platform_events (
-      id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      instance_id  UUID NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
-      event_type   VARCHAR(64) NOT NULL,
-      payload      JSONB NOT NULL DEFAULT '{}'::jsonb,
-      received_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      envelope_id      VARCHAR(26) UNIQUE,
+      instance_id      UUID NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+      tenant_id        UUID,
+      event_type       VARCHAR(64) NOT NULL,
+      severity         VARCHAR(16) NOT NULL DEFAULT 'info',
+      actor_user_id    UUID,
+      actor_email      VARCHAR(320),
+      actor_ip_address VARCHAR(64),
+      payload          JSONB NOT NULL DEFAULT '{}'::jsonb,
+      event_timestamp  TIMESTAMPTZ,
+      received_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      schema_version   VARCHAR(8) NOT NULL DEFAULT '1',
+      signature_kid    VARCHAR(64)
     )
+  `);
+
+  await adminPool.query(`
+    ALTER TABLE platform_events ADD COLUMN IF NOT EXISTS envelope_id      VARCHAR(26) UNIQUE
+  `);
+  await adminPool.query(`
+    ALTER TABLE platform_events ADD COLUMN IF NOT EXISTS tenant_id        UUID
+  `);
+  await adminPool.query(`
+    ALTER TABLE platform_events ADD COLUMN IF NOT EXISTS severity         VARCHAR(16) NOT NULL DEFAULT 'info'
+  `);
+  await adminPool.query(`
+    ALTER TABLE platform_events ADD COLUMN IF NOT EXISTS actor_user_id    UUID
+  `);
+  await adminPool.query(`
+    ALTER TABLE platform_events ADD COLUMN IF NOT EXISTS actor_email      VARCHAR(320)
+  `);
+  await adminPool.query(`
+    ALTER TABLE platform_events ADD COLUMN IF NOT EXISTS actor_ip_address VARCHAR(64)
+  `);
+  await adminPool.query(`
+    ALTER TABLE platform_events ADD COLUMN IF NOT EXISTS event_timestamp  TIMESTAMPTZ
+  `);
+  await adminPool.query(`
+    ALTER TABLE platform_events ADD COLUMN IF NOT EXISTS schema_version   VARCHAR(8) NOT NULL DEFAULT '1'
+  `);
+  await adminPool.query(`
+    ALTER TABLE platform_events ADD COLUMN IF NOT EXISTS signature_kid    VARCHAR(64)
   `);
 
   await adminPool.query(`
     CREATE INDEX IF NOT EXISTS idx_platform_events_instance
       ON platform_events (instance_id, received_at DESC)
+  `);
+
+  await adminPool.query(`
+    CREATE INDEX IF NOT EXISTS idx_platform_events_severity
+      ON platform_events (severity, received_at DESC)
+  `);
+
+  await adminPool.query(`
+    CREATE INDEX IF NOT EXISTS idx_platform_events_event_type
+      ON platform_events (event_type, received_at DESC)
   `);
 
   await adminPool.query(`
