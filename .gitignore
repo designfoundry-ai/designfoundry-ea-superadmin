@@ -27,6 +27,9 @@ next-env.d.ts
 .idea/
 .vscode/
 
+# Claude Code worktrees
+.claude/worktrees/
+
 # Testing
 playwright-report/
 test-results/
