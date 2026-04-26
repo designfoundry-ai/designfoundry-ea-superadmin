@@ -92,7 +92,7 @@ jobs:
             --region="${{ vars.GCP_REGION }}" \
             --platform=managed \
             --service-account="${{ vars.SUPERADMIN_SERVICE_ACCOUNT }}" \
-            --set-env-vars="NODE_ENV=production,NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL }}" \
+            --set-env-vars="NODE_ENV=production,NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL }},ADMIN_DATABASE_URL=${{ secrets.ADMIN_DATABASE_URL }},RSA_PRIVATE_KEY=${{ secrets.RSA_PRIVATE_KEY }},LICENSE_KEY_ID=${{ vars.LICENSE_KEY_ID }}" \
             --set-secrets="JWT_SECRET=${{ vars.JWT_SECRET_NAME || 'superadmin-jwt-secret' }}:latest" \
             --min-instances=0 \
             --max-instances=2 \
