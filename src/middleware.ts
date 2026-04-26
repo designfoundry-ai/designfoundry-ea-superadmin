@@ -3,9 +3,14 @@ import type { NextRequest } from 'next/server';
 
 // The /api/superadmin/* Next.js routes are a dev-only fallback that queries
 // Postgres directly. In production (and any env where NEXT_PUBLIC_API_URL is
-// set), the React app talks to the rezonator NestJS backend instead, so this
-// middleware blocks the local routes to prevent silently diverging code paths.
-const REAL_BACKEND = process.env.NEXT_PUBLIC_API_URL;
+// set to a real URL), the React app talks to the rezonator NestJS backend
+// instead, so this middleware blocks the local routes to prevent silently
+// diverging code paths. An empty string means "not configured" — same as
+// unset, since Next.js inlines empty .env values literally.
+const REAL_BACKEND =
+  process.env.NEXT_PUBLIC_API_URL && process.env.NEXT_PUBLIC_API_URL.length > 0
+    ? process.env.NEXT_PUBLIC_API_URL
+    : undefined;
 
 export function middleware(req: NextRequest) {
   if (!REAL_BACKEND) {

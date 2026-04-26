@@ -3,6 +3,7 @@ import pool from '@/lib/db';
 import { requireAdmin, AuthError, getClientIp } from '@/lib/auth';
 import { signLicense, planDefaults } from '@/lib/license';
 import { logAudit } from '@/lib/audit';
+import { EventBusService, EventBusError } from '@/lib/event-bus';
 
 export async function GET(req: NextRequest) {
   try {
@@ -90,6 +91,7 @@ export async function POST(req: NextRequest) {
       addons?: string[];
       expiresAt?: string;
       deliveryModel?: 'saas' | 'on_prem' | 'dev';
+      instanceId?: string;
     };
 
     if (!body.customerName || !body.contactEmail || !body.plan) {
@@ -157,7 +159,41 @@ export async function POST(req: NextRequest) {
     await logAudit(admin.id, admin.email, 'LICENSE_GENERATED', 'license', rows[0].id,
       { customerName: body.customerName, plan: body.plan }, getClientIp(req));
 
-    return NextResponse.json({ id: rows[0].id, licenseJwt }, { status: 201 });
+    let delivery: { attempted: boolean; ok: boolean; error?: string; envelopeId?: string } = {
+      attempted: false,
+      ok: false,
+    };
+
+    if (deliveryModel === 'saas' && body.instanceId) {
+      try {
+        const result = await EventBusService.deliverLicense({
+          instanceId: body.instanceId,
+          tenantId,
+          actor: { userId: admin.id, email: admin.email },
+          payload: {
+            licenseId: payload.jti,
+            licenseBlob: licenseJwt,
+            plan: body.plan,
+            features,
+            maxUsers,
+            maxObjects,
+            expiresAt: expiresAt ? expiresAt.toISOString() : null,
+          },
+        });
+        delivery = { attempted: true, ok: result.ok, envelopeId: result.envelopeId };
+        await logAudit(admin.id, admin.email, 'LICENSE_DELIVERED', 'license', rows[0].id,
+          { instanceId: body.instanceId, envelopeId: result.envelopeId, mode: result.mode },
+          getClientIp(req));
+      } catch (err) {
+        const message = err instanceof EventBusError || err instanceof Error
+          ? err.message
+          : 'Unknown publish error';
+        console.error('[licenses POST: deliver]', err);
+        delivery = { attempted: true, ok: false, error: message };
+      }
+    }
+
+    return NextResponse.json({ id: rows[0].id, licenseJwt, delivery }, { status: 201 });
   } catch (err) {
     if (err instanceof AuthError) return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     console.error('[licenses POST]', err);

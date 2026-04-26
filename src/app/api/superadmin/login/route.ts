@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { signAdminToken } from '@/lib/auth';
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api/v1';
 const IS_DEV = process.env.NODE_ENV !== 'production';
@@ -16,8 +17,11 @@ const DEV_USER = {
 };
 
 function devSuccessResponse() {
+  // Issue a real JWT so subsequent /api/superadmin/* requests pass
+  // requireAdmin() (which verifies via jsonwebtoken).
+  const token = signAdminToken({ id: DEV_USER.id, email: DEV_USER.email });
   return NextResponse.json({
-    token: 'dev-token-superadmin',
+    token,
     user: DEV_USER,
   });
 }
