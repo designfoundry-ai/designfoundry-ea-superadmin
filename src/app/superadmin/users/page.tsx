@@ -38,8 +38,8 @@ export default function UsersPage() {
   async function toggleUser(u: User) {
     setActionLoading(u.id);
     try {
-      if (u.status === 'active') await disableUser(u.id);
-      else await enableUser(u.id);
+      if (u.status === 'active') await disableUser(u.id, u.tenantId);
+      else await enableUser(u.id, u.tenantId);
       await load(filters);
     } catch { /* toast */ }
     setActionLoading(null);
