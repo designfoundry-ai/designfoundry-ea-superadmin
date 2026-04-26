@@ -46,7 +46,11 @@ npm run dev
 ## Environment Variables
 
 ```env
-NEXT_PUBLIC_API_URL=https://api.designfoundry.ai/api/v1   # Main platform API
+# Production / staging only — points the frontend at the rezonator backend.
+# For local dev leave empty so the app uses the local /api/superadmin/*
+# fallback routes (which accept dev creds super@designfoundry.app /
+# superadmin123). Setting a production URL locally breaks login.
+NEXT_PUBLIC_API_URL=
 NODE_ENV=development
 ```
 
