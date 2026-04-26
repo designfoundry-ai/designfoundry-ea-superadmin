@@ -41,7 +41,12 @@ export function SuperAdminSidebar() {
       {/* Header */}
       <div className="p-4 border-b border-slate-700">
         <div className="flex items-center gap-2">
-          <Shield className="w-5 h-5 text-indigo-400" />
+          <svg className="h-5 w-5 flex-shrink-0" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect width="32" height="32" rx="6" fill="#0284c7"/>
+              <path d="M16 15L26 21L16 27L6 21L16 15Z" fill="#0369a1" fill-opacity="0.9"/>
+              <path d="M16 10L26 16L16 22L6 16L16 10Z" fill="#0ea5e9" fill-opacity="0.85"/>
+              <path d="M16 5L26 11L16 17L6 11L16 5Z" fill="white" fill-opacity="0.9"/>
+            </svg>
           <span className="font-semibold text-sm">Super Admin</span>
         </div>
       </div>
