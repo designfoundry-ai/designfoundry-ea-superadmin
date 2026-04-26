@@ -249,8 +249,91 @@ Event types follow the `<category>.<verb>` convention. `payload` schema is type-
 | `license.activated` | `info` | `licenseId`, `tier`, `validUntil` |
 | `license.expired` | `warning` | `licenseId`, `expiredAt` |
 | `license.revoked` | `error` | `licenseId`, `revokedBy`, `reason` |
+| `license.delivered` | `info` | `licenseId`, `licenseJwt` (base64), `validUntil`, `tier` |
 | `content_pack.activated` | `info` | `packId`, `packVersion` |
 | `content_pack.deactivated` | `info` | `packId`, `reason` |
+
+**Direction convention:** `license.activated`, `license.expired`, `license.revoked` are published by the EA instance to the superadmin (upstream events). `license.delivered` is published by the superadmin to the EA instance (downstream delivery). All use the same topic.
+
+### FR-3.1: License Delivery via Pub/Sub (Superadmin → EA Instance)
+
+License delivery uses the same Pub/Sub topic to push licenses from the superadmin to registered EA instances. This replaces manual `.lic` file transfer for SaaS and cloud-managed tenants.
+
+**Flow:**
+```
+Superadmin generates license (POST /api/licenses)
+    → writes license to superadmin DB (licenses table)
+    → for saas/deliveryModel=saas tenants: publishes `license.delivered` to Pub/Sub topic
+    → Pub/Sub pushes to EA instance's subscriber
+    → EA instance verifies JWT signature using superadmin's public key (fetched from well-known URL)
+    → stores license in local DB / file system
+    → enforces limits based on license claims
+```
+
+**Publishing trigger:** When a new license is created (`POST /api/licenses`) and `delivery_model = 'saas'`, the superadmin publishes a `license.delivered` event to the topic. The `instanceId` is derived from the tenant's registered EA instance (from `instances` table, R1-07).
+
+**Subscription:** EA instances subscribe to the topic using a push subscription pointing to `https://<ea-instance>/api/v1/superadmin/events/ingest` OR a pull subscription from within the EA network. Each instance receives all `license.delivered` events and filters by `payload.tenantId` matching its own tenant.
+
+**On-prem fallback:** Tenants with `delivery_model = 'on_prem'` are not delivered via Pub/Sub. Admin downloads the `.lic` file from superadmin UI and transfers it manually to the on-prem server.
+
+**Security model:**
+- Superadmin publishes to the topic using its own service account (`designfoundry-superadmin@...`)
+- No shared secret between superadmin and EA instances
+- EA instances verify the license JWT using the superadmin's RSA public key (fetched from `https://superadmin.designfoundry.ai/.well-known/superadmin-public-key.pem`)
+- JWT verification (RS256) is the only trust mechanism — HMAC envelope signature is verified normally per FR-4 step 5
+
+**Pub/Sub topic:** same `platform-events` topic as upstream events. The direction (superadmin → instance) is indicated by `eventType` = `license.delivered`.
+
+**EA instance license refresh handler (new endpoint):**
+```
+POST /api/v1/superadmin/events/ingest
+```
+The same ingest endpoint handles `license.delivered` events. The EA instance's handler extracts `payload.licenseJwt` and stores it locally.
+
+**License JWT structure (from `src/lib/license.ts`):**
+```json
+{
+  "customerId": "acme-corp",
+  "customerName": "Acme Corp",
+  "plan": "professional",
+  "maxUsers": 100,
+  "maxObjects": 5000,
+  "features": ["core", "collaboration", "export"],
+  "addons": [],
+  "deliveryModel": "saas",
+  "jti": "01J5X9Y8Z7W6V5U4T3S2R1Q0P",
+  "iat": 1714067200,
+  "exp": 1745603200,
+  "iss": "designfoundry-superadmin"
+}
+```
+
+**Public key distribution:**
+- Well-known URL: `https://superadmin.designfoundry.ai/.well-known/superadmin-public-key.pem`
+- EA instances fetch and cache this on startup / daily refresh
+- On-prem: public key distributed during installation
+
+#### License Delivery — Event Envelope Example
+```json
+{
+  "id": "01J5X9Y8Z7W6V5U4T3S2R1Q1",
+  "version": "1",
+  "instanceId": "df-prod-eu",
+  "tenantId": "8f7e6d5c-4b3a-2918-1716-151413121110",
+  "eventType": "license.delivered",
+  "severity": "info",
+  "actor": { "userId": null, "email": "superadmin@designfoundry.ai" },
+  "payload": {
+    "licenseId": "01J5X9Y8Z7W6V5U4T3S2R1Q0P",
+    "licenseJwt": "eyJhbGc...",
+    "validUntil": "2027-04-26T00:00:00.000Z",
+    "tier": "professional"
+  },
+  "timestamp": "2026-04-26T12:30:00.000Z",
+  "signature": "sha256=abc123...",
+  "signatureKid": "prod-2026-01"
+}
+```
 
 #### System (severity: `error` or `critical`)
 
