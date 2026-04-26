@@ -74,12 +74,21 @@ Same as `staging` with:
 
 ## 3. Deploy Flow
 
+**Staging (production-only mode):** Manual trigger only — no auto-deploy on push.
+
 ```
 develop branch push
+  └── ci.yml (lint + typecheck)
+
+manual workflow_dispatch
   └── deploy-staging.yml
         ├── package job: docker build → .tar artifact
         └── deploy job: download artifact → deploy-gcp action → Cloud Run
+```
 
+**Production:** Auto-deploys on push to `main`.
+
+```
 main branch push
   └── deploy-production.yml
         ├── build job: docker build + push to Artifact Registry
@@ -88,15 +97,43 @@ main branch push
 
 ---
 
+
+## 3b. Zero-Cost Staging
+
+Staging superadmin is designed to run at **$0 compute cost**:
+
+- Cloud Run: scaled to **0 instances** (--min-instances=0, --max-instances=1 when stopped)
+- Cloud SQL: **not provisioned** (staging uses in-memory dev DB or SQLite fallback)
+
+- No Pub/Sub, no Redis — added when needed
+
+To control staging infrastructure from your Mac:
+
+```bash
+# Check current state
+./scripts/gcp-cost-control.sh staging --status
+
+# Stop staging (scale to 0)
+./scripts/gcp-cost-control.sh staging --stop
+
+# Start staging (restore)
+./scripts/gcp-cost-control.sh staging --start
+```
+
+
+When stopped, staging Cloud Run costs **$0**. The service URL still responds (cold start on first request, ~5-10s).
+---
+
 ## 4. Workflow Files
 
 | File | Purpose |
 |------|---------|
 | `.github/workflows/ci.yml` | Lint + typecheck + build (every push) |
-| `.github/workflows/deploy-staging.yml` | Deploy to staging on `develop` push + manual trigger |
-| `.github/workflows/deploy-production.yml` | Deploy to production on `main` push |
+| `.github/workflows/deploy-staging.yml` | Manual trigger only — no auto-deploy on `develop` push |
+| `.github/workflows/deploy-production.yml` | Auto-deploy to production on `main` push |
 | `.github/actions/deploy-gcp/action.yml` | Reusable deployment adapter (auth → Docker → Cloud Run) |
 | `deploy/setup-gcp.sh` | One-time GCP project provisioning |
+| `scripts/gcp-cost-control.sh` | Start/stop/scale staging or production infrastructure |
 
 ---
 
