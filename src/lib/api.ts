@@ -260,7 +260,7 @@ export async function getLicense(id: string) {
 }
 
 export async function generateLicense(data: GenerateLicenseInput) {
-  return request<License>('/licenses', {
+  return request<GenerateLicenseResponse>('/licenses', {
     method: 'POST',
     body: JSON.stringify(data),
   });
@@ -277,6 +277,32 @@ export async function revokeLicense(id: string) {
   return request<void>(`/licenses/${id}/revoke`, { method: 'POST' });
 }
 
+export async function deliverLicense(id: string, instanceId: string) {
+  return request<DeliverLicenseResponse>(`/licenses/${id}/deliver`, {
+    method: 'POST',
+    body: JSON.stringify({ instanceId }),
+  });
+}
+
+export interface DeliveryResult {
+  attempted: boolean;
+  ok: boolean;
+  envelopeId?: string;
+  error?: string;
+}
+
+export interface GenerateLicenseResponse {
+  id: string;
+  licenseJwt: string;
+  delivery: DeliveryResult;
+}
+
+export interface DeliverLicenseResponse {
+  ok: boolean;
+  envelopeId: string;
+  mode: 'pubsub' | 'direct' | 'disabled';
+}
+
 export interface GenerateLicenseInput {
   customerName: string;
   contactEmail: string;
@@ -288,6 +314,7 @@ export interface GenerateLicenseInput {
   addons?: string[];
   expiresAt?: string;
   deliveryModel?: 'saas' | 'on_prem' | 'dev';
+  instanceId?: string;
 }
 
 export interface LicenseList {

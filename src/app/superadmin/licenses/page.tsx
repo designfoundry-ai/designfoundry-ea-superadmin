@@ -1,12 +1,17 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { KeyRound, Plus, Download, AlertTriangle, X, Check } from 'lucide-react';
+import { KeyRound, Plus, Download, AlertTriangle, X, Check, Send } from 'lucide-react';
 import {
-  getLicenses, generateLicense, revokeLicense,
-  type License, type GenerateLicenseInput,
+  getLicenses, generateLicense, revokeLicense, deliverLicense, listInstances,
+  type License, type GenerateLicenseInput, type Instance,
 } from '@/lib/api';
 import { clsx } from 'clsx';
+
+interface Toast {
+  kind: 'success' | 'error';
+  message: string;
+}
 
 const STATUS_COLOR: Record<string, string> = {
   active:   'bg-emerald-100 text-emerald-700',
@@ -17,7 +22,17 @@ const STATUS_COLOR: Record<string, string> = {
 
 const PLANS = ['free', 'team', 'professional', 'enterprise'];
 
-function GenerateModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
+function GenerateModal({
+  instances,
+  onClose,
+  onSuccess,
+  onToast,
+}: {
+  instances: Instance[];
+  onClose: () => void;
+  onSuccess: () => void;
+  onToast: (t: Toast) => void;
+}) {
   const [form, setForm] = useState<GenerateLicenseInput>({
     customerName: '',
     contactEmail: '',
@@ -27,12 +42,22 @@ function GenerateModal({ onClose, onSuccess }: { onClose: () => void; onSuccess:
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  const isSaas = form.deliveryModel === 'saas';
+  const activeInstances = instances.filter(i => i.status === 'active');
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
     setLoading(true);
     try {
-      await generateLicense(form);
+      const result = await generateLicense(form);
+      if (result.delivery.attempted) {
+        onToast(result.delivery.ok
+          ? { kind: 'success', message: `License delivered to instance (${result.delivery.envelopeId?.slice(0, 8)}…)` }
+          : { kind: 'error', message: `License created but delivery failed: ${result.delivery.error ?? 'unknown error'}` });
+      } else {
+        onToast({ kind: 'success', message: 'License generated' });
+      }
       onSuccess();
       onClose();
     } catch (err) {
@@ -144,6 +169,30 @@ function GenerateModal({ onClose, onSuccess }: { onClose: () => void; onSuccess:
                 placeholder="for existing SaaS tenant"
               />
             </div>
+
+            {isSaas && (
+              <div className="col-span-2">
+                <label className="block text-xs font-medium text-slate-600 mb-1">
+                  Deliver to instance (optional)
+                </label>
+                <select
+                  value={form.instanceId ?? ''}
+                  onChange={e => setForm(p => ({ ...p, instanceId: e.target.value || undefined }))}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm
+                             focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="">Don&apos;t auto-deliver</option>
+                  {activeInstances.map(inst => (
+                    <option key={inst.id} value={inst.id}>
+                      {inst.name} ({inst.environment})
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-slate-400 mt-1">
+                  Publishes a <code>license.delivered</code> event to the chosen EA instance.
+                </p>
+              </div>
+            )}
           </div>
 
           <div className="flex justify-end gap-2 pt-2">
@@ -165,20 +214,28 @@ function GenerateModal({ onClose, onSuccess }: { onClose: () => void; onSuccess:
 
 export default function LicensesPage() {
   const [licenses, setLicenses] = useState<License[]>([]);
+  const [instances, setInstances] = useState<Instance[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showGenerate, setShowGenerate] = useState(false);
   const [revokeTarget, setRevokeTarget] = useState<string | null>(null);
+  const [deliverTarget, setDeliverTarget] = useState<string | null>(null);
+  const [deliverInstance, setDeliverInstance] = useState<string>('');
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [toast, setToast] = useState<Toast | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const result = await getLicenses();
-      setLicenses(result.licenses);
-      setTotal(result.total);
+      const [licResult, instResult] = await Promise.all([
+        getLicenses(),
+        listInstances().catch(() => ({ instances: [] as Instance[], total: 0 })),
+      ]);
+      setLicenses(licResult.licenses);
+      setTotal(licResult.total);
+      setInstances(instResult.instances);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load licenses');
     } finally {
@@ -188,24 +245,79 @@ export default function LicensesPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  useEffect(() => {
+    if (!toast) return;
+    const handle = setTimeout(() => setToast(null), 5000);
+    return () => clearTimeout(handle);
+  }, [toast]);
+
   async function handleRevoke(id: string) {
     setActionLoading(id);
     try {
       await revokeLicense(id);
       await load();
-    } catch { /* toast */ }
+    } catch (err) {
+      setToast({ kind: 'error', message: err instanceof Error ? err.message : 'Revoke failed' });
+    }
     setActionLoading(null);
     setRevokeTarget(null);
+  }
+
+  async function handleDeliver(id: string, instanceId: string) {
+    if (!instanceId) {
+      setToast({ kind: 'error', message: 'Pick an instance first' });
+      return;
+    }
+    setActionLoading(id);
+    try {
+      const result = await deliverLicense(id, instanceId);
+      setToast({
+        kind: 'success',
+        message: `Delivered (${result.mode}, ${result.envelopeId.slice(0, 8)}…)`,
+      });
+      setDeliverTarget(null);
+      setDeliverInstance('');
+    } catch (err) {
+      setToast({
+        kind: 'error',
+        message: err instanceof Error ? err.message : 'Delivery failed',
+      });
+    } finally {
+      setActionLoading(null);
+    }
   }
 
   function downloadLicense(id: string) {
     window.open(`/api/licenses/${id}/download`, '_blank');
   }
 
+  const activeInstances = instances.filter(i => i.status === 'active');
+
   return (
     <div className="p-8">
       {showGenerate && (
-        <GenerateModal onClose={() => setShowGenerate(false)} onSuccess={load} />
+        <GenerateModal
+          instances={instances}
+          onClose={() => setShowGenerate(false)}
+          onSuccess={load}
+          onToast={setToast}
+        />
+      )}
+
+      {toast && (
+        <div className={clsx(
+          'fixed top-4 right-4 z-50 px-4 py-3 rounded-lg shadow-lg border text-sm max-w-sm',
+          toast.kind === 'success'
+            ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+            : 'bg-red-50 border-red-200 text-red-800',
+        )}>
+          <div className="flex items-start gap-2">
+            <span className="flex-1">{toast.message}</span>
+            <button onClick={() => setToast(null)} className="text-slate-400 hover:text-slate-600">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
       )}
 
       <div className="flex items-center justify-between mb-6">
@@ -284,6 +396,48 @@ export default function LicensesPage() {
                       >
                         <Download className="w-4 h-4" />
                       </button>
+                    )}
+                    {!lic.isOnPrem && lic.tenantId && lic.status !== 'revoked' && (
+                      deliverTarget === lic.id ? (
+                        <div className="flex items-center gap-1">
+                          <select
+                            value={deliverInstance}
+                            onChange={e => setDeliverInstance(e.target.value)}
+                            className="px-2 py-1 border border-slate-200 rounded text-xs"
+                            disabled={actionLoading === lic.id}
+                          >
+                            <option value="">Select instance…</option>
+                            {activeInstances.map(inst => (
+                              <option key={inst.id} value={inst.id}>
+                                {inst.name} ({inst.environment})
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            onClick={() => handleDeliver(lic.id, deliverInstance)}
+                            disabled={actionLoading === lic.id || !deliverInstance}
+                            className="text-emerald-600 hover:text-emerald-800 disabled:opacity-50"
+                            title="Confirm deliver"
+                          >
+                            <Check className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => { setDeliverTarget(null); setDeliverInstance(''); }}
+                            className="text-slate-400 hover:text-slate-600"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => { setDeliverTarget(lic.id); setDeliverInstance(''); }}
+                          className="flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 font-medium"
+                          title="Push license to tenant instance via event bus"
+                        >
+                          <Send className="w-3.5 h-3.5" />
+                          Deliver
+                        </button>
+                      )
                     )}
                     {lic.status !== 'revoked' && (
                       <>
