@@ -29,8 +29,9 @@ error()   { echo -e "${RED}[ERROR]${RESET} $*"; }
 success() { echo -e "${GREEN}[OK]${RESET}   $*"; }
 
 section() {
+  local cap=$(echo "$1" | tr 'a-z' 'A-Z')
   echo ""
-  echo -e "${BOLD}${CYAN}═══ $1 ═══${RESET}"
+  echo -e "${BOLD}${CYAN}═══ ${cap} ═══${RESET}"
 }
 
 # ── Validate gcloud ───────────────────────────────────────────────────────────
@@ -96,7 +97,6 @@ stop_cloudrun() {
     --region="${REGION}" \
     --project="${project}" \
     --min-instances=0 \
-    --max-instances=0 \
     --quiet 2>&1
 
   success "  ${service} scaled to 0"
@@ -184,7 +184,7 @@ status_environment() {
       ;;
   esac
 
-  section "Environment: ${env^}"
+  section "Environment: Staging"
 
   # Superadmin Cloud Run
   echo -e "  ${BOLD}Superadmin (${superadmin_project})${RESET}"
@@ -248,7 +248,7 @@ stop_environment() {
       ;;
   esac
 
-  section "Stopping ${env^}"
+  section "Stopping Staging"
 
   local sa_service
   sa_service=$(resolve_service_name "${superadmin_project}" "${env}")
@@ -261,7 +261,7 @@ stop_environment() {
   local sql_instance="superadmin-${env}"
   stop_cloudsql "${superadmin_project}" "${sql_instance}"
 
-  success "${env^} stopped"
+  success "Staging stopped"
 }
 
 # ── Start environment ───────────────────────────────────────────────────────────
@@ -279,7 +279,7 @@ start_environment() {
       ;;
   esac
 
-  section "Starting ${env^}"
+  section "Starting Staging"
 
   local sa_service
   sa_service=$(resolve_service_name "${superadmin_project}" "${env}")
@@ -292,7 +292,7 @@ start_environment() {
   local sql_instance="superadmin-${env}"
   start_cloudsql "${superadmin_project}" "${sql_instance}"
 
-  success "${env^} started"
+  success "Staging started"
 }
 
 # ── Usage ────────────────────────────────────────────────────────────────────────
