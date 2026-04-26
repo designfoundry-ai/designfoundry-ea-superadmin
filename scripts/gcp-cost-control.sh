@@ -29,7 +29,7 @@ error()   { echo -e "${RED}[ERROR]${RESET} $*"; }
 success() { echo -e "${GREEN}[OK]${RESET}   $*"; }
 
 section() {
-  local cap=$(echo "$1" | tr 'a-z' 'A-Z')
+  local cap=$(echo "$1" | awk '{for(i=1;i<=length;i++){c=substr($0,i,1);printf"%s",(i==1?toupper(c):c)}}')
   echo ""
   echo -e "${BOLD}${CYAN}═══ ${cap} ═══${RESET}"
 }
@@ -184,7 +184,7 @@ status_environment() {
       ;;
   esac
 
-  section "Environment: Staging"
+  section "Environment: $(echo "$env" | awk '{for(i=1;i<=length;i++){c=substr($0,i,1);printf"%s",(i==1?toupper(c):c)}}')"
 
   # Superadmin Cloud Run
   echo -e "  ${BOLD}Superadmin (${superadmin_project})${RESET}"
@@ -248,7 +248,7 @@ stop_environment() {
       ;;
   esac
 
-  section "Stopping Staging"
+  section "Stopping $(echo "$env" | awk '{for(i=1;i<=length;i++){c=substr($0,i,1);printf"%s",(i==1?toupper(c):c)}}')"
 
   local sa_service
   sa_service=$(resolve_service_name "${superadmin_project}" "${env}")
@@ -261,7 +261,7 @@ stop_environment() {
   local sql_instance="superadmin-${env}"
   stop_cloudsql "${superadmin_project}" "${sql_instance}"
 
-  success "Staging stopped"
+  success "$(echo "$env" | awk '{for(i=1;i<=length;i++){c=substr($0,i,1);printf"%s",(i==1?toupper(c):c)}}') stopped"
 }
 
 # ── Start environment ───────────────────────────────────────────────────────────
@@ -279,7 +279,7 @@ start_environment() {
       ;;
   esac
 
-  section "Starting Staging"
+  section "Starting $(echo "$env" | awk '{for(i=1;i<=length;i++){c=substr($0,i,1);printf"%s",(i==1?toupper(c):c)}}')"
 
   local sa_service
   sa_service=$(resolve_service_name "${superadmin_project}" "${env}")
@@ -292,7 +292,7 @@ start_environment() {
   local sql_instance="superadmin-${env}"
   start_cloudsql "${superadmin_project}" "${sql_instance}"
 
-  success "Staging started"
+  success "$(echo "$env" | awk '{for(i=1;i<=length;i++){c=substr($0,i,1);printf"%s",(i==1?toupper(c):c)}}') started"
 }
 
 # ── Usage ────────────────────────────────────────────────────────────────────────

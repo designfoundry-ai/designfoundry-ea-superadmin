@@ -1,9 +1,8 @@
 name: Deploy Staging
 
 on:
-  push:
-    branches:
-      - develop
+  # Manual trigger only — no auto-deploy on push to develop
+  # Push to develop for code review/CI checks, trigger manually when ready to deploy
   workflow_dispatch:
     inputs:
       image_tag:
