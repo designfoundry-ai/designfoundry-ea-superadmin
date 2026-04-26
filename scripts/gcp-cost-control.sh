@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # GCP Cost Control — start/stop staging or production infrastructure
 # Run from your Mac mini (requires gcloud auth + project access)
+# Compatible with Bash 3.2 (macOS default)
+#
 # Usage:
-#   gcp-cost-control.sh staging --stop
-#   gcp-cost-control.sh production --start
-#   gcp-cost-control.sh all --status
+#   ./gcp-cost-control.sh staging --stop
+#   ./gcp-cost-control.sh production --start
+#   ./gcp-cost-control.sh all --status
 
 set -euo pipefail
 
@@ -17,17 +19,7 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 RESET='\033[0m'
 
-# ── Config ───────────────────────────────────────────────────────────────────
-# Superadmin projects
-declare -A SUPERADMIN_PROJECTS
-SUPERADMIN_PROJECTS[staging]="designfoundry-admin-staging"
-SUPERADMIN_PROJECTS[production]="designfoundry-admin-production"
-
-# EA platform projects
-declare -A EA_PROJECTS
-EA_PROJECTS[staging]="designfoundry-ea-staging"
-EA_PROJECTS[production]="designfoundry-ea-production"
-
+# ── Fixed config ─────────────────────────────────────────────────────────────
 REGION="europe-central2"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -58,43 +50,23 @@ check_gcloud() {
 # ── Resolve service name from project ───────────────────────────────────────────
 resolve_service_name() {
   local project="$1"
-  local default_service="$2"
+  local env="$2"
 
-  # Try to find the service automatically
   local service
   service=$(gcloud run services list --platform=managed --region="${REGION}" \
     --project="${project}" \
-    --format="value(metadata.name)" 2>/dev/null | grep -E "${default_service}|superadmin|designfoundry" | head -n1)
+    --format="value(metadata.name)" 2>/dev/null | grep -E "designfoundry-admin-${env}|designfoundry-ea-${env}|superadmin" | head -n1)
 
   if [[ -z "${service}" ]]; then
-    # Fallback to default
-    echo "${default_service}"
+    # Fallback to default naming convention
+    if [[ "${project}" == *"admin"* ]]; then
+      echo "designfoundry-admin-${env}"
+    else
+      echo "designfoundry-ea-${env}"
+    fi
   else
     echo "${service}"
   fi
-}
-
-# ── Get Cloud Run instance count ──────────────────────────────────────────────────
-get_instance_count() {
-  local project="$1"
-  local service="$2"
-
-  local count
-  count=$(gcloud run services describe "${service}" \
-    --region="${REGION}" \
-    --project="${project}" \
-    --format="value(spec.template.metadata.annotations.autoscaling.knative.dev/minScale)" 2>/dev/null || echo "unknown")
-  echo "${count}"
-}
-
-# ── Get Cloud SQL tier ──────────────────────────────────────────────────────────
-get_cloudsql_tier() {
-  local project="$1"
-  local instance_name="$2"
-
-  gcloud sql instances describe "${instance_name}" \
-    --project="${project}" \
-    --format="value(settings.tier)" 2>/dev/null || echo "N/A"
 }
 
 # ── Stop Cloud Run service ─────────────────────────────────────────────────────
@@ -102,14 +74,13 @@ stop_cloudrun() {
   local project="$1"
   local service="$2"
 
-  info "Stopping Cloud Run service: ${service} in ${project}"
+  info "Stopping Cloud Run: ${service} (${project})"
 
   local current_min
   current_min=$(gcloud run services describe "${service}" \
     --region="${REGION}" \
     --project="${project}" \
     --format="value(spec.template.metadata.annotations.autoscaling.knative.dev/minScale)" 2>/dev/null || echo "")
-
   local current_max
   current_max=$(gcloud run services describe "${service}" \
     --region="${REGION}" \
@@ -117,7 +88,7 @@ stop_cloudrun() {
     --format="value(spec.template.metadata.annotations.autoscaling.knative.dev/maxScale)" 2>/dev/null || echo "")
 
   if [[ "${current_min}" == "0" && "${current_max}" == "0" ]]; then
-    info "${service} is already scaled to 0"
+    info "  ${service} already scaled to 0"
     return 0
   fi
 
@@ -128,7 +99,7 @@ stop_cloudrun() {
     --max-instances=0 \
     --quiet 2>&1
 
-  success "${service} scaled to 0 instances (cost stopped)"
+  success "  ${service} scaled to 0"
 }
 
 # ── Start Cloud Run service ─────────────────────────────────────────────────────
@@ -138,7 +109,7 @@ start_cloudrun() {
   local min_instances="${3:-1}"
   local max_instances="${4:-2}"
 
-  info "Starting Cloud Run service: ${service} in ${project}"
+  info "Starting Cloud Run: ${service} (${project})"
 
   gcloud run services update "${service}" \
     --region="${REGION}" \
@@ -147,7 +118,7 @@ start_cloudrun() {
     --max-instances="${max_instances}" \
     --quiet 2>&1
 
-  success "${service} scaled to ${min_instances}-${max_instances} instances"
+  success "  ${service} scaled to ${min_instances}-${max_instances}"
 }
 
 # ── Stop Cloud SQL instance ─────────────────────────────────────────────────────
@@ -155,7 +126,7 @@ stop_cloudsql() {
   local project="$1"
   local instance_name="$2"
 
-  info "Stopping Cloud SQL instance: ${instance_name} in ${project}"
+  info "Stopping Cloud SQL: ${instance_name} (${project})"
 
   local state
   state=$(gcloud sql instances describe "${instance_name}" \
@@ -163,16 +134,19 @@ stop_cloudsql() {
     --format="value(state)" 2>/dev/null || echo "UNKNOWN")
 
   if [[ "${state}" == "STOPPED" ]]; then
-    info "${instance_name} is already stopped"
+    info "  ${instance_name} already stopped"
     return 0
   fi
 
   gcloud sql instances patch "${instance_name}" \
     --project="${project}" \
     --no-backup \
-    --quiet 2>&1
+    --quiet 2>&1 || {
+      warn "  Cloud SQL stop failed — instance may use public IP or lack VPC connector"
+      return 0
+    }
 
-  success "${instance_name} stopped (maintenance window will not run)"
+  success "  ${instance_name} stopped"
 }
 
 # ── Start Cloud SQL instance ────────────────────────────────────────────────────
@@ -180,64 +154,68 @@ start_cloudsql() {
   local project="$1"
   local instance_name="$2"
 
-  info "Starting Cloud SQL instance: ${instance_name} in ${project}"
+  info "Starting Cloud SQL: ${instance_name} (${project})"
 
   gcloud sql instances patch "${instance_name}" \
     --project="${project}" \
     --backup \
-    --quiet 2>&1
+    --quiet 2>&1 || warn "  Cloud SQL start failed"
 
-  success "${instance_name} started"
+  success "  ${instance_name} started"
 }
 
-# ── Status ────────────────────────────────────────────────────────────────────
+# ── Status environment ──────────────────────────────────────────────────────────
 status_environment() {
   local env="$1"
-  local superadmin_project="${SUPERADMIN_PROJECTS[$env]}"
-  local ea_project="${EA_PROJECTS[$env]}"
+
+  # Project IDs per environment
+  case "${env}" in
+    staging)
+      local superadmin_project="designfoundry-admin-staging"
+      local ea_project="designfoundry-ea-staging"
+      ;;
+    production)
+      local superadmin_project="designfoundry-admin-production"
+      local ea_project="designfoundry-ea-production"
+      ;;
+    *)
+      error "Unknown environment: ${env}"
+      return 1
+      ;;
+  esac
 
   section "Environment: ${env^}"
 
   # Superadmin Cloud Run
   echo -e "  ${BOLD}Superadmin (${superadmin_project})${RESET}"
   local sa_service
-  sa_service=$(resolve_service_name "${superadmin_project}" "designfoundry-admin-${env}")
-  local sa_url
+  sa_service=$(resolve_service_name "${superadmin_project}" "${env}")
+  local sa_url sa_min sa_max
   sa_url=$(gcloud run services describe "${sa_service}" \
-    --region="${REGION}" \
-    --project="${superadmin_project}" \
+    --region="${REGION}" --project="${superadmin_project}" \
     --format="value(status.url)" 2>/dev/null || echo "NOT FOUND")
-  local sa_min
   sa_min=$(gcloud run services describe "${sa_service}" \
-    --region="${REGION}" \
-    --project="${superadmin_project}" \
+    --region="${REGION}" --project="${superadmin_project}" \
     --format="value(spec.template.metadata.annotations.autoscaling.knative.dev/minScale)" 2>/dev/null || echo "?")
-  local sa_max
   sa_max=$(gcloud run services describe "${sa_service}" \
-    --region="${REGION}" \
-    --project="${superadmin_project}" \
+    --region="${REGION}" --project="${superadmin_project}" \
     --format="value(spec.template.metadata.annotations.autoscaling.knative.dev/maxScale)" 2>/dev/null || echo "?")
   echo -e "    Cloud Run: ${sa_url}"
   echo -e "    Scale:    min=${sa_min} max=${sa_max}"
 
-  # EA platform Cloud Run
+  # EA Platform Cloud Run
   echo -e "  ${BOLD}EA Platform (${ea_project})${RESET}"
   local ea_service
-  ea_service=$(resolve_service_name "${ea_project}" "designfoundry-ea-${env}")
-  local ea_url
+  ea_service=$(resolve_service_name "${ea_project}" "${env}")
+  local ea_url ea_min ea_max
   ea_url=$(gcloud run services describe "${ea_service}" \
-    --region="${REGION}" \
-    --project="${ea_project}" \
+    --region="${REGION}" --project="${ea_project}" \
     --format="value(status.url)" 2>/dev/null || echo "NOT FOUND")
-  local ea_min
   ea_min=$(gcloud run services describe "${ea_service}" \
-    --region="${REGION}" \
-    --project="${ea_project}" \
+    --region="${REGION}" --project="${ea_project}" \
     --format="value(spec.template.metadata.annotations.autoscaling.knative.dev/minScale)" 2>/dev/null || echo "?")
-  local ea_max
   ea_max=$(gcloud run services describe "${ea_service}" \
-    --region="${REGION}" \
-    --project="${ea_project}" \
+    --region="${REGION}" --project="${ea_project}" \
     --format="value(spec.template.metadata.annotations.autoscaling.knative.dev/maxScale)" 2>/dev/null || echo "?")
   echo -e "    Cloud Run: ${ea_url}"
   echo -e "    Scale:    min=${ea_min} max=${ea_max}"
@@ -245,73 +223,87 @@ status_environment() {
   # Cloud SQL
   echo -e "  ${BOLD}Cloud SQL${RESET}"
   local sql_instance="superadmin-${env}"
-  local sql_state
+  local sql_state sql_tier
   sql_state=$(gcloud sql instances describe "${sql_instance}" \
     --project="${superadmin_project}" \
     --format="value(state)" 2>/dev/null || echo "NOT FOUND")
-  local sql_tier
-  sql_tier=$(get_cloudsql_tier "${superadmin_project}" "${sql_instance}")
-  echo -e "    Instance: ${sql_instance} (${sql_tier}) — ${sql_state}"
+  sql_tier=$(gcloud sql instances describe "${sql_instance}" \
+    --project="${superadmin_project}" \
+    --format="value(settings.tier)" 2>/dev/null || echo "N/A")
+  echo -e "    ${sql_instance}: ${sql_tier} — ${sql_state}"
 }
 
 # ── Stop environment ─────────────────────────────────────────────────────────────
 stop_environment() {
   local env="$1"
-  local superadmin_project="${SUPERADMIN_PROJECTS[$env]}"
-  local ea_project="${EA_PROJECTS[$env]}"
+
+  case "${env}" in
+    staging)
+      local superadmin_project="designfoundry-admin-staging"
+      local ea_project="designfoundry-ea-staging"
+      ;;
+    production)
+      local superadmin_project="designfoundry-admin-production"
+      local ea_project="designfoundry-ea-production"
+      ;;
+  esac
 
   section "Stopping ${env^}"
 
-  # Superadmin Cloud Run
   local sa_service
-  sa_service=$(resolve_service_name "${superadmin_project}" "designfoundry-admin-${env}")
+  sa_service=$(resolve_service_name "${superadmin_project}" "${env}")
   stop_cloudrun "${superadmin_project}" "${sa_service}"
 
-  # EA Cloud Run
   local ea_service
-  ea_service=$(resolve_service_name "${ea_project}" "designfoundry-ea-${env}")
+  ea_service=$(resolve_service_name "${ea_project}" "${env}")
   stop_cloudrun "${ea_project}" "${ea_service}"
 
-  # Cloud SQL (stop to save money)
   local sql_instance="superadmin-${env}"
-  stop_cloudsql "${superadmin_project}" "${sql_instance}" || warn "Cloud SQL stop skipped (may need vpcconnect or private IP)"
+  stop_cloudsql "${superadmin_project}" "${sql_instance}"
 
-  success "${env^} infrastructure stopped"
+  success "${env^} stopped"
 }
 
 # ── Start environment ───────────────────────────────────────────────────────────
 start_environment() {
   local env="$1"
-  local superadmin_project="${SUPERADMIN_PROJECTS[$env]}"
-  local ea_project="${EA_PROJECTS[$env]}"
+
+  case "${env}" in
+    staging)
+      local superadmin_project="designfoundry-admin-staging"
+      local ea_project="designfoundry-ea-staging"
+      ;;
+    production)
+      local superadmin_project="designfoundry-admin-production"
+      local ea_project="designfoundry-ea-production"
+      ;;
+  esac
 
   section "Starting ${env^}"
 
-  # Superadmin Cloud Run
   local sa_service
-  sa_service=$(resolve_service_name "${superadmin_project}" "designfoundry-admin-${env}")
+  sa_service=$(resolve_service_name "${superadmin_project}" "${env}")
   start_cloudrun "${superadmin_project}" "${sa_service}" "0" "2"
 
-  # EA Cloud Run
   local ea_service
-  ea_service=$(resolve_service_name "${ea_project}" "designfoundry-ea-${env}")
+  ea_service=$(resolve_service_name "${ea_project}" "${env}")
   start_cloudrun "${ea_project}" "${ea_service}" "1" "2"
 
-  # Cloud SQL
   local sql_instance="superadmin-${env}"
-  start_cloudsql "${superadmin_project}" "${sql_instance}" || warn "Cloud SQL start skipped"
+  start_cloudsql "${superadmin_project}" "${sql_instance}"
 
-  success "${env^} infrastructure started"
+  success "${env^} started"
 }
 
 # ── Usage ────────────────────────────────────────────────────────────────────────
 usage() {
   cat <<EOF
 ${BOLD}GCP Cost Control${RESET} — start/stop staging or production infrastructure
+Compatible with Bash 3.2 (macOS default)
 
 ${BOLD}USAGE${RESET}
-    gcp-cost-control.sh <environment> <action>
-    gcp-cost-control.sh all --status
+    ./gcp-cost-control.sh <environment> <action>
+    ./gcp-cost-control.sh all --status
 
 ${BOLD}ENVIRONMENTS${RESET}
     staging     designfoundry-admin-staging + designfoundry-ea-staging
@@ -328,14 +320,17 @@ ${BOLD}EXAMPLES${RESET}
     ./gcp-cost-control.sh production --stop
     ./gcp-cost-control.sh all --start
 
+${BOLD}PREREQUISITES${RESET}
+    gcloud auth login
+    gcloud config set project <your-project>
+    IAM roles needed: roles/run.admin, roles/cloudsql.admin
+
 ${BOLD}NOTES${RESET}
-    Cloud SQL stop requires:
-      - Private IP or VPC Connector (stopped instances can't use public IP)
-      - Or: delete and recreate from latest backup when needed
+    Cloud SQL stop requires Private IP + VPC Connector.
+    Without it, Cloud SQL stop is not supported — script will warn.
 
-    Cloud Run is free at 0 instances — stopping saves ~100% of compute cost.
-    Cloud SQL with no backups is cheaper — consider disabling backups for staging.
-
+    Cloud Run at 0 instances = free. Cloud SQL still costs when running.
+    For maximum savings: stop both Cloud Run AND Cloud SQL.
 EOF
   exit 1
 }
@@ -351,8 +346,7 @@ ENVIRONMENT="$1"
 ACTION="$2"
 
 case "${ACTION}" in
-  --stop|--start|--status)
-    ;;
+  --stop|--start|--status) ;;
   *)
     error "Unknown action: ${ACTION}"
     usage
