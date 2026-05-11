@@ -8,6 +8,13 @@ on:
     branches:
       - main
 
+env:
+  # Opt in to Node.js 24 for GitHub JavaScript actions. GitHub is migrating
+  # from Node 20 → Node 24 on 2026-09-16; setting this flag adopts the new
+  # runtime early and silences the deprecation warning that already fires
+  # on every Node 20 action invocation.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   validate:
     name: Validate
