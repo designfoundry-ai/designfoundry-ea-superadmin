@@ -18,25 +18,30 @@ jest.mock('@/lib/db', () => ({
   default: { query: (...args: unknown[]) => dbQuery(...args) },
 }));
 
-const signLicense = jest.fn(() =>
-  // Minimal but-structurally-valid JWT so the route's `JSON.parse(b64(payload))`
-  // succeeds. Real signing is exercised in license-signing.test.ts.
-  [
-    Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url'),
-    Buffer.from(JSON.stringify({ jti: 'jti-test' })).toString('base64url'),
-    'sig',
-  ].join('.'),
-);
-const planDefaults = jest.fn(() => ({
-  maxUsers: 25,
-  maxObjects: 1000,
-  features: ['core'],
-}));
+// Use jest.fn() (no impl) so the inferred mock call signature is
+// (...args: any[]) => any — required for the rest-spread forwarders below
+// to satisfy TypeScript. Default behavior is configured in beforeEach.
+const signLicense = jest.fn();
+const planDefaults = jest.fn();
 jest.mock('@/lib/license', () => ({
   __esModule: true,
   signLicense: (...args: unknown[]) => signLicense(...args),
   planDefaults: (...args: unknown[]) => planDefaults(...args),
 }));
+
+// Minimal but-structurally-valid JWT so the route's `JSON.parse(b64(payload))`
+// succeeds. Real signing is exercised in license-signing.test.ts.
+const STUB_LICENSE_JWT = [
+  Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url'),
+  Buffer.from(JSON.stringify({ jti: 'jti-test' })).toString('base64url'),
+  'sig',
+].join('.');
+
+const STUB_PLAN_DEFAULTS = {
+  maxUsers: 25,
+  maxObjects: 1000,
+  features: ['core'],
+};
 
 import { POST } from '@/app/api/webhooks/stripe/route';
 
@@ -70,8 +75,10 @@ const ORIGINAL_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 
 beforeEach(() => {
   dbQuery.mockReset();
-  signLicense.mockClear();
-  planDefaults.mockClear();
+  signLicense.mockReset();
+  signLicense.mockReturnValue(STUB_LICENSE_JWT);
+  planDefaults.mockReset();
+  planDefaults.mockReturnValue(STUB_PLAN_DEFAULTS);
   process.env.STRIPE_WEBHOOK_SECRET = WEBHOOK_SECRET;
 });
 

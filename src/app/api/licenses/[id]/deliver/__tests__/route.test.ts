@@ -186,13 +186,14 @@ describe('POST /api/licenses/[id]/deliver', () => {
     expect(res.status).toBe(503);
   });
 
-  it('maps unknown EventBusError codes to HTTP 502', async () => {
+  it('maps the TRANSPORT EventBusError code to HTTP 502 (catch-all)', async () => {
     dbQuery.mockResolvedValueOnce({ rows: [baseLicenseRow] });
     deliverLicense.mockRejectedValueOnce(
-      new EventBusError('upstream timeout', 'TRANSPORT_FAILURE'),
+      new EventBusError('upstream timeout', 'TRANSPORT'),
     );
 
     const res = await POST(jsonPost({ instanceId: 'inst-1' }), ctx('lic-1'));
+    // The route maps INSTANCE_INACTIVE → 409, CONFIG/NO_SECRET → 503, else 502.
     expect(res.status).toBe(502);
   });
 });
