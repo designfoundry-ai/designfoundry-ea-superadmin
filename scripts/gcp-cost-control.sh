@@ -122,31 +122,34 @@ start_cloudrun() {
 }
 
 # ── Stop Cloud SQL instance ─────────────────────────────────────────────────────
+# Uses activation-policy=NEVER to actually stop the instance (compute billing pauses,
+# storage billing continues). The previous --no-backup version only disabled backups
+# and left the instance running, so it provided no cost savings.
 stop_cloudsql() {
   local project="$1"
   local instance_name="$2"
 
   info "Stopping Cloud SQL: ${instance_name} (${project})"
 
-  local state
-  state=$(gcloud sql instances describe "${instance_name}" \
+  local policy
+  policy=$(gcloud sql instances describe "${instance_name}" \
     --project="${project}" \
-    --format="value(state)" 2>/dev/null || echo "UNKNOWN")
+    --format="value(settings.activationPolicy)" 2>/dev/null || echo "UNKNOWN")
 
-  if [[ "${state}" == "STOPPED" ]]; then
-    info "  ${instance_name} already stopped"
+  if [[ "${policy}" == "NEVER" ]]; then
+    info "  ${instance_name} already stopped (activationPolicy=NEVER)"
     return 0
   fi
 
   gcloud sql instances patch "${instance_name}" \
     --project="${project}" \
-    --no-backup \
+    --activation-policy=NEVER \
     --quiet 2>&1 || {
-      warn "  Cloud SQL stop failed — instance may use public IP or lack VPC connector"
+      warn "  Cloud SQL stop failed for ${instance_name}"
       return 0
     }
 
-  success "  ${instance_name} stopped"
+  success "  ${instance_name} stopped (activationPolicy=NEVER)"
 }
 
 # ── Start Cloud SQL instance ────────────────────────────────────────────────────
@@ -156,12 +159,22 @@ start_cloudsql() {
 
   info "Starting Cloud SQL: ${instance_name} (${project})"
 
+  local policy
+  policy=$(gcloud sql instances describe "${instance_name}" \
+    --project="${project}" \
+    --format="value(settings.activationPolicy)" 2>/dev/null || echo "UNKNOWN")
+
+  if [[ "${policy}" == "ALWAYS" ]]; then
+    info "  ${instance_name} already running (activationPolicy=ALWAYS)"
+    return 0
+  fi
+
   gcloud sql instances patch "${instance_name}" \
     --project="${project}" \
-    --backup \
+    --activation-policy=ALWAYS \
     --quiet 2>&1 || warn "  Cloud SQL start failed"
 
-  success "  ${instance_name} started"
+  success "  ${instance_name} started (activationPolicy=ALWAYS)"
 }
 
 # ── Status environment ──────────────────────────────────────────────────────────
@@ -326,10 +339,11 @@ ${BOLD}PREREQUISITES${RESET}
     IAM roles needed: roles/run.admin, roles/cloudsql.admin
 
 ${BOLD}NOTES${RESET}
-    Cloud SQL stop requires Private IP + VPC Connector.
-    Without it, Cloud SQL stop is not supported — script will warn.
+    --stop sets Cloud SQL activationPolicy=NEVER, which pauses compute billing
+    (storage and backups continue to be billed at the usual rate).
+    --start patches it back to ALWAYS.
 
-    Cloud Run at 0 instances = free. Cloud SQL still costs when running.
+    Cloud Run at 0 instances = free. Cloud SQL compute is the big-ticket cost.
     For maximum savings: stop both Cloud Run AND Cloud SQL.
 EOF
   exit 1
