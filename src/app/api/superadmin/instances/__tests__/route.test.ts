@@ -7,8 +7,11 @@ import { NextRequest } from 'next/server';
 
 // --- mock factories (lazy lambdas to dodge jest.mock hoist TDZ) ---
 
+// Use jest.fn() (no impl) so the inferred mock call signature is
+// (...args: any[]) => any — required for the rest-spread forwarders below
+// to satisfy TypeScript.
 const requireAdmin = jest.fn();
-const getClientIp = jest.fn(() => '127.0.0.1');
+const getClientIp = jest.fn().mockReturnValue('127.0.0.1');
 jest.mock('@/lib/auth', () => {
   const actual = jest.requireActual('@/lib/auth');
   return {

@@ -13,8 +13,11 @@ jest.mock('@/lib/db', () => ({
   default: { query: (...args: unknown[]) => dbQuery(...args) },
 }));
 
+// Use jest.fn() (no impl) so the inferred mock call signature is
+// (...args: any[]) => any — required for the rest-spread forwarders below
+// to satisfy TypeScript.
 const requireAdmin = jest.fn();
-const getClientIp = jest.fn(() => '127.0.0.1');
+const getClientIp = jest.fn().mockReturnValue('127.0.0.1');
 jest.mock('@/lib/auth', () => {
   const actual = jest.requireActual('@/lib/auth');
   return {
@@ -40,23 +43,15 @@ jest.mock('@/lib/audit', () => ({
 }));
 
 const deliverLicense = jest.fn();
-jest.mock('@/lib/event-bus', () => {
-  // Class is defined inside the factory so it doesn't TDZ-fail when the
-  // mock is hoisted above this file's top-level declarations.
-  class EventBusError extends Error {
-    constructor(message: string) {
-      super(message);
-      this.name = 'EventBusError';
-    }
-  }
-  return {
-    __esModule: true,
-    EventBusService: { deliverLicense: (...args: unknown[]) => deliverLicense(...args) },
-    EventBusError,
-  };
-});
-// Pull the mocked class back out for tests to use.
-import { EventBusError } from '@/lib/event-bus';
+jest.mock('@/lib/event-bus', () => ({
+  __esModule: true,
+  EventBusService: { deliverLicense: (...args: unknown[]) => deliverLicense(...args) },
+  // The route's catch matches `err instanceof EventBusError || err instanceof Error`,
+  // so the test can throw a plain Error and the same branch fires. Avoid
+  // importing the real EventBusError type into this file — its constructor
+  // signature is (message, code) and we don't care about the code path here.
+  EventBusError: Error,
+}));
 
 import { POST } from '@/app/api/licenses/route';
 
@@ -168,7 +163,7 @@ describe('POST /api/licenses', () => {
     dbQuery.mockResolvedValueOnce({ rows: [{ id: 'inst-row-x' }] }); // tenants lookup
     dbQuery.mockResolvedValueOnce({ rows: [{ id: 'lic-3' }] });       // INSERT
     dbQuery.mockResolvedValueOnce({ rows: [] });                       // UPDATE tenants
-    deliverLicense.mockRejectedValueOnce(new EventBusError('boom'));
+    deliverLicense.mockRejectedValueOnce(new Error('boom'));
 
     const res = await POST(
       jsonPost({
