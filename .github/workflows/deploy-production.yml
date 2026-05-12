@@ -30,6 +30,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # NEXT_PUBLIC_API_URL is baked into the frontend bundle at build time.
+      # Fail the workflow up front if it's missing rather than silently
+      # building an image with an empty API base URL.
+      - name: Validate required vars
+        shell: bash
+        run: |
+          : "${API_URL:?ERROR: NEXT_PUBLIC_API_URL repository variable not set — configure it at Settings > Environments > production}"
+        env:
+          API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+
       - name: Resolve image tag
         id: meta
         shell: bash

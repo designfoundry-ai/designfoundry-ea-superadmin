@@ -35,6 +35,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # NEXT_PUBLIC_API_URL is baked into the frontend bundle at build time.
+      # Fail the workflow up front if it's missing rather than silently
+      # building an image pointed at a localhost placeholder.
+      - name: Validate required vars
+        shell: bash
+        run: |
+          : "${API_URL:?ERROR: STAGING_NEXT_PUBLIC_API_URL repository variable not set — configure it at Settings > Environments > staging}"
+        env:
+          API_URL: ${{ vars.STAGING_NEXT_PUBLIC_API_URL }}
+
       - name: Resolve image tag
         id: meta
         shell: bash
@@ -55,7 +65,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
-            NEXT_PUBLIC_API_URL=${{ vars.STAGING_NEXT_PUBLIC_API_URL || 'http://localhost:3001/api/v1' }}
+            NEXT_PUBLIC_API_URL=${{ vars.STAGING_NEXT_PUBLIC_API_URL }}
 
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
@@ -90,7 +100,7 @@ jobs:
           artifact_registry_repo: ${{ vars.ARTIFACT_REGISTRY_REPO }}
           cloud_run_service: ${{ vars.CLOUD_RUN_SERVICE }}
           service_account: ${{ vars.SUPERADMIN_SERVICE_ACCOUNT }}
-          next_public_api_url: ${{ vars.STAGING_NEXT_PUBLIC_API_URL || 'http://localhost:3001/api/v1' }}
+          next_public_api_url: ${{ vars.STAGING_NEXT_PUBLIC_API_URL }}
           jwt_secret_name: ${{ vars.JWT_SECRET_NAME || 'superadmin-jwt-secret' }}
           gcp_workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           gcp_deployer_service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
@@ -109,5 +119,5 @@ jobs:
             echo "- Branch: ${{ github.ref_name }}"
             echo "- Image tag: ${{ needs.package.outputs.image_tag }}"
             echo "- Service URL: ${{ steps.url.outputs.service_url }}"
-            echo "- API URL: ${{ vars.STAGING_NEXT_PUBLIC_API_URL || 'http://localhost:3001/api/v1' }}"
+            echo "- API URL: ${{ vars.STAGING_NEXT_PUBLIC_API_URL }}"
           } >> "$GITHUB_STEP_SUMMARY"
