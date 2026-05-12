@@ -10,20 +10,15 @@ Internet → Cloud Run (superadmin frontend :3000)
 
 The Superadmin is a single-service Next.js app deployed to **Cloud Run**. It reads/writes to the shared platform database and integrates with Stripe, GCP Secret Manager, and GCP KMS. It is **not** a write master for tenant data — it acts as an admin client to the platform API.
 
+Admin is **production-only**: there is no separate staging deploy, no staging GCP project, no staging GitHub Environment.
+
 ---
 
 ## 1. One-Time GCP Setup
 
-Run once per GCP project. The script is idempotent — safe to re-run after Cloud Run is deployed (it then also creates the Pub/Sub push subscription, which depends on the Cloud Run URL existing).
+Run once. The script is idempotent — safe to re-run after Cloud Run is deployed (it then also creates the Pub/Sub push subscription, which depends on the Cloud Run URL existing).
 
 ```bash
-# staging
-GCP_PROJECT_ID=designfoundry-admin-staging \
-GCP_REGION=europe-central2 \
-RESOURCE_SCOPE=staging \
-bash deploy/setup-gcp.sh
-
-# production
 GCP_PROJECT_ID=designfoundry-admin-production \
 GCP_REGION=europe-central2 \
 RESOURCE_SCOPE=production \
@@ -48,64 +43,57 @@ What `deploy/setup-gcp.sh` does:
 
 ---
 
-## 2. GitHub Environments
+## 2. GitHub Environment
 
-Two GitHub Environments are required (`Settings → Environments`). The bootstrap script `deploy/setup-github-environments.sh` creates them and populates the variables; it uses `gh variable set` for vars and `gh secret set` for secrets (the latter is needed to seal the value with the env's libsodium public key — raw `gh api` cannot).
+A single `production` GitHub Environment is required (`Settings → Environments`). The bootstrap script `deploy/setup-github-environments.sh` creates it and populates the variables; it uses `gh variable set` for vars and `gh secret set` for secrets (the latter is needed to seal the value with the env's libsodium public key — raw `gh api` cannot).
 
 ```bash
 GITHUB_ORG=designfoundry-ai \
 REPO=designfoundry-ea-superadmin \
-WI_PROVIDER_STAGING="projects/.../locations/global/workloadIdentityPools/.../providers/..." \
 WI_PROVIDER_PRODUCTION="projects/.../locations/global/workloadIdentityPools/.../providers/..." \
-JWT_SECRET_STAGING="..." \
 JWT_SECRET_PRODUCTION="..." \
 ./deploy/setup-github-environments.sh
 ```
 
-Variables per environment (created by the script above):
+Variables on the production environment (created by the script above):
 
-| Variable | Staging | Production |
-|---|---|---|
-| `GCP_PROJECT_ID` | `designfoundry-admin-staging` | `designfoundry-admin-production` |
-| `GCP_REGION` | `europe-central2` | `europe-central2` |
-| `ARTIFACT_REGISTRY_REPO` | `superadmin` | `superadmin` |
-| `CLOUD_RUN_SERVICE` | `designfoundry-ea-superadmin-staging` | `designfoundry-ea-superadmin` |
-| `SUPERADMIN_SERVICE_ACCOUNT` | `designfoundry-superadmin@designfoundry-admin-staging.iam.gserviceaccount.com` | `designfoundry-superadmin@designfoundry-admin-production.iam.gserviceaccount.com` |
-| `GCP_DEPLOYER_SERVICE_ACCOUNT` | `github-deployer@designfoundry-admin-staging.iam.gserviceaccount.com` | `github-deployer@designfoundry-admin-production.iam.gserviceaccount.com` |
-| `GCP_WORKLOAD_IDENTITY_PROVIDER` | (from `setup-gcp.sh` summary) | (from `setup-gcp.sh` summary) |
-| `NEXT_PUBLIC_API_URL` | staging platform API base URL | production platform API base URL |
-
-Variables read only by `deploy-production.yml`:
-
-| Variable | Notes |
+| Variable | Value |
 |---|---|
-| `LICENSE_KEY_ID` | RSA key-id stamped into `kid` on every license JWT (e.g. `prod-2026-01`). Set on the production environment only. |
+| `GCP_PROJECT_ID` | `designfoundry-admin-production` |
+| `GCP_REGION` | `europe-central2` |
+| `ARTIFACT_REGISTRY_REPO` | `superadmin` |
+| `CLOUD_RUN_SERVICE` | `designfoundry-ea-superadmin` |
+| `SUPERADMIN_SERVICE_ACCOUNT` | `designfoundry-superadmin@designfoundry-admin-production.iam.gserviceaccount.com` |
+| `GCP_DEPLOYER_SERVICE_ACCOUNT` | `github-deployer@designfoundry-admin-production.iam.gserviceaccount.com` |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | (from `setup-gcp.sh` summary) |
+| `NEXT_PUBLIC_API_URL` | production platform API base URL |
+| `LICENSE_KEY_ID` | RSA key-id stamped into `kid` on every license JWT (e.g. `prod-2026-01`) |
 | `JWT_SECRET_NAME` | Optional. Defaults to `superadmin-jwt-secret`; override only if you renamed the Secret Manager secret. |
 
-Secrets per environment:
+Secrets on the production environment:
 
 | Secret | Where used |
 |---|---|
-| `JWT_SECRET` | NextAuth signing secret. Source: `superadmin-jwt-secret` in Secret Manager (run `gcloud secrets versions access latest --secret=superadmin-jwt-secret --project=<project>` to fetch). |
-| `ADMIN_DATABASE_URL` | **Production only.** Cloud SQL connection string for the superadmin's admin DB. Source: `superadmin-database-url` secret created by `setup-gcp.sh`. |
-| `RSA_PRIVATE_KEY` | **Production only.** PEM-encoded RSA private key for license signing. Source: `./keys/private.pem` generated by `setup-gcp.sh`. |
-
-> **Note on the `NEXT_PUBLIC_API_URL` rename:** the variable was previously called `STAGING_NEXT_PUBLIC_API_URL`. Since vars now live at the Environment scope (not repo-level), the prefix is redundant. The bootstrap script idempotently deletes the old name when run on an existing environment.
+| `JWT_SECRET` | NextAuth signing secret. Source: `superadmin-jwt-secret` in Secret Manager (run `gcloud secrets versions access latest --secret=superadmin-jwt-secret --project=designfoundry-admin-production` to fetch). |
+| `ADMIN_DATABASE_URL` | Cloud SQL connection string for the superadmin's admin DB. Source: `superadmin-database-url` secret created by `setup-gcp.sh`. |
+| `RSA_PRIVATE_KEY` | PEM-encoded RSA private key for license signing. Source: `./keys/private.pem` generated by `setup-gcp.sh`. |
+| `STRIPE_WEBHOOK_SECRET` | HMAC-SHA256 secret from Stripe Dashboard → Developers → Webhooks. The runtime guard rejects the placeholder value (`whsec_placeholder`); the CI guard rejects it before deploy. |
 
 ---
 
 ## 3. Workflow Architecture
 
-Both `deploy-staging.yml` and `deploy-production.yml` are single-job workflows that delegate the actual deploy to the `./.github/actions/deploy-gcp` composite action. The composite does the heavy lifting (auth → setup-gcloud → buildx → Artifact Registry auth → build & push → Cloud Run deploy → IAM binding → service URL). Both environments share the same code path, which keeps regressions in one path catchable by runs of the other.
+`deploy-production.yml` is a single-job workflow that delegates the deploy to the `./.github/actions/deploy-gcp` composite action. The composite does the heavy lifting (auth → setup-gcloud → buildx → Artifact Registry auth → build & push → Cloud Run deploy → IAM binding → service URL).
 
 ```
 develop branch push
   └── ci.yml (typecheck + lint + build + jest)
 
-manual workflow_dispatch (or main → push for production)
-  └── deploy-{staging|production}.yml
-        └── deploy job (environment: <env>)
+main branch push
+  └── deploy-production.yml
+        └── deploy job (environment: production)
               ├── Validate required vars (fails fast if NEXT_PUBLIC_API_URL missing)
+              ├── Reject placeholder Stripe webhook secret (refuses whsec_placeholder)
               ├── Resolve image tag
               ├── ./.github/actions/deploy-gcp ← single source of truth
               │     ├── google-github-actions/auth@v2 (WIF)
@@ -122,22 +110,22 @@ manual workflow_dispatch (or main → push for production)
 
 ### Composite inputs
 
-| Input | Required | Used by | Notes |
-|---|---|---|---|
-| `environment_name` | yes | both | Display-only label ("staging" / "production") |
-| `image_tag` | yes | both | SHA passed from `Resolve image tag` step |
-| `gcp_project_id` / `gcp_region` | yes | both | |
-| `gcp_workload_identity_provider` | yes | both | Full WIF provider resource path |
-| `gcp_deployer_service_account` | yes | both | SA impersonated via WIF |
-| `artifact_registry_repo` / `cloud_run_service` | yes | both | |
-| `service_account` | yes | both | Cloud Run **runtime** SA (`designfoundry-superadmin`) |
-| `next_public_api_url` | yes | both | Baked into the client bundle at build time |
-| `jwt_secret_name` | no (default `superadmin-jwt-secret`) | both | Name of the Secret Manager secret bound to `JWT_SECRET` |
-| `extra_env_vars` | no (default `""`) | production only | See below |
+| Input | Required | Notes |
+|---|---|---|
+| `environment_name` | yes | Display-only label (always `"production"` for admin) |
+| `image_tag` | yes | SHA passed from `Resolve image tag` step |
+| `gcp_project_id` / `gcp_region` | yes | |
+| `gcp_workload_identity_provider` | yes | Full WIF provider resource path |
+| `gcp_deployer_service_account` | yes | SA impersonated via WIF |
+| `artifact_registry_repo` / `cloud_run_service` | yes | |
+| `service_account` | yes | Cloud Run **runtime** SA (`designfoundry-superadmin`) |
+| `next_public_api_url` | yes | Baked into the client bundle at build time |
+| `jwt_secret_name` | no (default `superadmin-jwt-secret`) | Name of the Secret Manager secret bound to `JWT_SECRET` |
+| `extra_env_vars` | no (default `""`) | Production layers DB / RSA / license env vars on top of the base set. See below. |
 
 ### `extra_env_vars` — `||`-separated, comma-safe
 
-Production needs additional env vars on Cloud Run (`ADMIN_DATABASE_URL`, `RSA_PRIVATE_KEY`, `LICENSE_KEY_ID`); staging does not. The composite accepts these via `extra_env_vars` and stitches them onto the base set (`NODE_ENV`, `NEXT_PUBLIC_API_URL`) before passing to `gcloud run deploy --set-env-vars`.
+Production needs additional env vars on Cloud Run (`ADMIN_DATABASE_URL`, `RSA_PRIVATE_KEY`, `LICENSE_KEY_ID`). The composite accepts these via `extra_env_vars` and stitches them onto the base set (`NODE_ENV`, `NEXT_PUBLIC_API_URL`) before passing to `gcloud run deploy --set-env-vars`.
 
 **Format:** entries separated by `||` (two pipes). The composite forwards this to gcloud using its alternate-delimiter syntax (`^||^...`), documented in `gcloud topic escaping` (multi-character delimiters are explicitly supported). Values may contain commas, newlines, equals signs, etc. — anything except a literal `||`, which never occurs in DB connection strings, RSA PEM bodies, JWT secrets, license IDs, or anything else we deploy with.
 
@@ -149,29 +137,20 @@ The caller omits the leading `^||^` sentinel — the composite prepends it. This
 
 ---
 
-## 4. Zero-Cost Staging
-
-Staging superadmin is designed to run at **$0 compute cost**:
-
-- Cloud Run: scaled to 0 instances when idle (1+ when started).
-- Cloud SQL: provisioned but stoppable via `activation-policy=NEVER` (compute billing pauses; storage continues at low rate).
-- No Redis / no Pub/Sub on staging by default.
-
-To control staging infrastructure from your laptop:
+## 4. Cost Control
 
 ```bash
-# Show current state of both environments
-./scripts/gcp-cost-control.sh staging --status
+# Show current state
+./scripts/gcp-cost-control.sh status
 
-# Stop staging (Cloud Run min-instances=0, Cloud SQL activation-policy=NEVER)
-./scripts/gcp-cost-control.sh staging --stop
+# Stop production (Cloud Run min-instances=0, Cloud SQL activation-policy=NEVER)
+./scripts/gcp-cost-control.sh stop
 
-# Start staging (Cloud SQL activation-policy=ALWAYS; Cloud Run min-instances kept at 0
-#               so cold start, but Cloud SQL is reachable for app boot)
-./scripts/gcp-cost-control.sh staging --start
+# Start production (Cloud SQL activation-policy=ALWAYS; Cloud Run cold-starts on next request)
+./scripts/gcp-cost-control.sh start
 ```
 
-When stopped, staging Cloud Run is $0 and Cloud SQL is reduced to storage-only cost (no compute). Cold start on first request is ~5–10s.
+When stopped, Cloud Run is $0 and Cloud SQL is reduced to storage-only cost (no compute). Cold start on first request is ~5–10s.
 
 ---
 
@@ -189,12 +168,11 @@ When stopped, staging Cloud Run is $0 and Cloud SQL is reduced to storage-only c
 | File | Purpose |
 |------|---------|
 | `.github/workflows/ci.yml` | Lint + typecheck + build + jest on every push/PR |
-| `.github/workflows/deploy-staging.yml` | `workflow_dispatch` only; calls the composite |
 | `.github/workflows/deploy-production.yml` | Auto-deploys on push to `main`; calls the composite with `extra_env_vars` |
 | `.github/actions/deploy-gcp/action.yml` | Reusable Cloud Run deploy composite (the only place gcloud commands live) |
 | `deploy/setup-gcp.sh` | One-time GCP project provisioning (idempotent) |
-| `deploy/setup-github-environments.sh` | Creates + populates the GitHub Environments via `gh secret set` / `gh variable set` |
-| `scripts/gcp-cost-control.sh` | Start/stop/status Cloud Run + Cloud SQL per environment |
+| `deploy/setup-github-environments.sh` | Creates + populates the production GitHub Environment via `gh secret set` / `gh variable set` |
+| `scripts/gcp-cost-control.sh` | Start / stop / status of Cloud Run + Cloud SQL on the production project |
 
 ---
 
@@ -215,10 +193,11 @@ The Cloud Run IAM layer first requires a Workspace-domain credential; the app th
 | Decision | Rationale |
 |----------|-----------|
 | Single service (no backend split) | Superadmin is API client + frontend only |
+| Production-only (no staging deploy) | Single admin tenant; review code on `develop` via CI, ship via `main` push |
 | Workload Identity Federation | No service account key files in GitHub; OIDC token exchange |
 | Pools at `locations/global` | GitHub OIDC tokens have no region; the action expects global ARNs |
 | `principalSet` pinned to `attribute.repository/<org>/<repo>` | Per-repo binding, not pool-wide |
 | Two-layer auth (IAM + JWT) | Defense in depth against either layer being misconfigured |
-| Composite action drives both envs | One code path; regressions caught by either env's runs |
+| Composite action wraps the deploy | One place to change the deploy contract; reused if another env is ever added |
 | `\|\|`-delimited `extra_env_vars` | Comma-safe for future multi-host conn strings / JSON values |
-| RSA private key as a GitHub Secret (production only) | Kept out of source; loaded into Cloud Run via `--set-env-vars` |
+| RSA private key as a GitHub Secret | Kept out of source; loaded into Cloud Run via `--set-env-vars` |
