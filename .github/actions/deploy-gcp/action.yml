@@ -48,11 +48,24 @@ inputs:
     default: superadmin-jwt-secret
   extra_env_vars:
     description: |
-      Additional --set-env-vars entries, comma-separated KEY=VALUE pairs.
+      Additional --set-env-vars entries, separated by '||' (two pipes).
       Concatenated onto the base set (NODE_ENV, NEXT_PUBLIC_API_URL).
-      Caveat: values must not contain commas — gcloud splits on comma.
-      Newlines and other whitespace are fine. Production passes
-      ADMIN_DATABASE_URL, RSA_PRIVATE_KEY, LICENSE_KEY_ID via this input.
+
+      Format (no leading ^||^ — the composite adds it):
+        KEY1=value1||KEY2=value with, commas||KEY3=multi
+        line
+        value
+
+      Why '||' and not ','? gcloud's default --set-env-vars delimiter is
+      comma; values containing commas (multi-host Postgres connection
+      strings, JSON payloads, etc.) would corrupt the env set. The
+      composite forwards your entries using gcloud's alternate-delimiter
+      syntax (^||^), which 'gcloud topic escaping' documents as supported
+      with multi-character delimiters. '||' was picked because it never
+      occurs inside DB URLs, RSA PEM bodies, JWT secrets, or license IDs.
+
+      Production passes ADMIN_DATABASE_URL, RSA_PRIVATE_KEY, LICENSE_KEY_ID
+      via this input; staging leaves it empty.
     required: false
     default: ""
 
@@ -113,9 +126,12 @@ runs:
       #            (src/app/api/auth/login/route.ts).
       # --no-allow-unauthenticated closes the IAM layer.
       run: |
-        ENV_VARS="NODE_ENV=production,NEXT_PUBLIC_API_URL=${{ inputs.next_public_api_url }}"
+        # Use gcloud's alternate-delimiter form '^||^...' so values can
+        # contain commas (DB conn strings, JSON, etc.) without corrupting
+        # the env set. See `gcloud topic escaping` for the syntax.
+        ENV_VARS="^||^NODE_ENV=production||NEXT_PUBLIC_API_URL=${{ inputs.next_public_api_url }}"
         if [[ -n "${EXTRA_ENV_VARS}" ]]; then
-          ENV_VARS="${ENV_VARS},${EXTRA_ENV_VARS}"
+          ENV_VARS="${ENV_VARS}||${EXTRA_ENV_VARS}"
         fi
 
         gcloud run deploy "${{ inputs.cloud_run_service }}" \

@@ -135,20 +135,17 @@ manual workflow_dispatch (or main → push for production)
 | `jwt_secret_name` | no (default `superadmin-jwt-secret`) | both | Name of the Secret Manager secret bound to `JWT_SECRET` |
 | `extra_env_vars` | no (default `""`) | production only | See below |
 
-### `extra_env_vars` — caret-delimited form
+### `extra_env_vars` — `||`-separated, comma-safe
 
 Production needs additional env vars on Cloud Run (`ADMIN_DATABASE_URL`, `RSA_PRIVATE_KEY`, `LICENSE_KEY_ID`); staging does not. The composite accepts these via `extra_env_vars` and stitches them onto the base set (`NODE_ENV`, `NEXT_PUBLIC_API_URL`) before passing to `gcloud run deploy --set-env-vars`.
 
-**Format:** caret-delimited (`^^^`), defensive against values that contain commas (multi-host Postgres connection strings, JSON blobs, etc.).
+**Format:** entries separated by `||` (two pipes). The composite forwards this to gcloud using its alternate-delimiter syntax (`^||^...`), documented in `gcloud topic escaping` (multi-character delimiters are explicitly supported). Values may contain commas, newlines, equals signs, etc. — anything except a literal `||`, which never occurs in DB connection strings, RSA PEM bodies, JWT secrets, license IDs, or anything else we deploy with.
 
 ```yaml
-extra_env_vars: |
-  ^^^^ADMIN_DATABASE_URL=postgresql://user:pass@/db?host=/cloudsql/...^^^RSA_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----
-  ...
-  -----END PRIVATE KEY-----^^^LICENSE_KEY_ID=prod-2026-01
+extra_env_vars: ADMIN_DATABASE_URL=${{ secrets.ADMIN_DATABASE_URL }}||RSA_PRIVATE_KEY=${{ secrets.RSA_PRIVATE_KEY }}||LICENSE_KEY_ID=${{ vars.LICENSE_KEY_ID }}
 ```
 
-The leading `^^^^` (four carets, then the delimiter `^^^`) is gcloud's syntax for "use `^^^` as the delimiter instead of comma." See `gcloud topic escaping` for the full rules. The composite forwards this verbatim to `--set-env-vars`. Values may contain newlines, equals signs, anything except the `^^^` triple — which is virtually impossible in practice.
+The caller omits the leading `^||^` sentinel — the composite prepends it. This keeps the workflow's `with:` block readable while still being comma-safe end-to-end. Defensive against future additions like `DATABASE_URL=host1,host2,host3` style multi-host strings or inlined JSON payloads.
 
 ---
 
@@ -223,5 +220,5 @@ The Cloud Run IAM layer first requires a Workspace-domain credential; the app th
 | `principalSet` pinned to `attribute.repository/<org>/<repo>` | Per-repo binding, not pool-wide |
 | Two-layer auth (IAM + JWT) | Defense in depth against either layer being misconfigured |
 | Composite action drives both envs | One code path; regressions caught by either env's runs |
-| `^^^`-delimited `extra_env_vars` | Comma-safe for future multi-host conn strings / JSON values |
+| `\|\|`-delimited `extra_env_vars` | Comma-safe for future multi-host conn strings / JSON values |
 | RSA private key as a GitHub Secret (production only) | Kept out of source; loaded into Cloud Run via `--set-env-vars` |
