@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# GCP Cost Control — start/stop staging or production infrastructure
+# GCP Cost Control — start/stop/status the production superadmin infrastructure
 # Run from your Mac mini (requires gcloud auth + project access)
 # Compatible with Bash 3.2 (macOS default)
 #
+# Admin is production-only; the script no longer takes an environment argument.
+#
 # Usage:
-#   ./gcp-cost-control.sh staging --stop
-#   ./gcp-cost-control.sh production --start
-#   ./gcp-cost-control.sh all --status
+#   ./gcp-cost-control.sh status
+#   ./gcp-cost-control.sh stop
+#   ./gcp-cost-control.sh start
 
 set -euo pipefail
 
@@ -21,6 +23,9 @@ RESET='\033[0m'
 
 # ── Fixed config ─────────────────────────────────────────────────────────────
 REGION="europe-central2"
+SUPERADMIN_PROJECT="designfoundry-admin-production"
+EA_PROJECT="designfoundry-ea-production"
+SQL_INSTANCE="superadmin-production"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo -e "${BLUE}[INFO]${RESET}  $*"; }
@@ -29,9 +34,8 @@ error()   { echo -e "${RED}[ERROR]${RESET} $*"; }
 success() { echo -e "${GREEN}[OK]${RESET}   $*"; }
 
 section() {
-  local cap=$(echo "$1" | awk '{for(i=1;i<=length;i++){c=substr($0,i,1);printf"%s",(i==1?toupper(c):c)}}')
   echo ""
-  echo -e "${BOLD}${CYAN}═══ ${cap} ═══${RESET}"
+  echo -e "${BOLD}${CYAN}═══ $1 ═══${RESET}"
 }
 
 # ── Validate gcloud ───────────────────────────────────────────────────────────
@@ -51,19 +55,18 @@ check_gcloud() {
 # ── Resolve service name from project ───────────────────────────────────────────
 resolve_service_name() {
   local project="$1"
-  local env="$2"
 
   local service
   service=$(gcloud run services list --platform=managed --region="${REGION}" \
     --project="${project}" \
-    --format="value(metadata.name)" 2>/dev/null | grep -E "designfoundry-admin-${env}|designfoundry-ea-${env}|superadmin" | head -n1)
+    --format="value(metadata.name)" 2>/dev/null | grep -E "designfoundry-admin-production|designfoundry-ea-production|superadmin" | head -n1)
 
   if [[ -z "${service}" ]]; then
     # Fallback to default naming convention
     if [[ "${project}" == *"admin"* ]]; then
-      echo "designfoundry-admin-${env}"
+      echo "designfoundry-admin-production"
     else
-      echo "designfoundry-ea-${env}"
+      echo "designfoundry-ea-production"
     fi
   else
     echo "${service}"
@@ -177,171 +180,120 @@ start_cloudsql() {
   success "  ${instance_name} started (activationPolicy=ALWAYS)"
 }
 
-# ── Status environment ──────────────────────────────────────────────────────────
+# ── Status ──────────────────────────────────────────────────────────────────────
 status_environment() {
-  local env="$1"
-
-  # Project IDs per environment
-  case "${env}" in
-    staging)
-      local superadmin_project="designfoundry-admin-staging"
-      local ea_project="designfoundry-ea-staging"
-      ;;
-    production)
-      local superadmin_project="designfoundry-admin-production"
-      local ea_project="designfoundry-ea-production"
-      ;;
-    *)
-      error "Unknown environment: ${env}"
-      return 1
-      ;;
-  esac
-
-  section "Environment: $(echo "$env" | awk '{for(i=1;i<=length;i++){c=substr($0,i,1);printf"%s",(i==1?toupper(c):c)}}')"
+  section "Production"
 
   # Superadmin Cloud Run
-  echo -e "  ${BOLD}Superadmin (${superadmin_project})${RESET}"
+  echo -e "  ${BOLD}Superadmin (${SUPERADMIN_PROJECT})${RESET}"
   local sa_service
-  sa_service=$(resolve_service_name "${superadmin_project}" "${env}")
+  sa_service=$(resolve_service_name "${SUPERADMIN_PROJECT}")
   local sa_url sa_min sa_max
   sa_url=$(gcloud run services describe "${sa_service}" \
-    --region="${REGION}" --project="${superadmin_project}" \
+    --region="${REGION}" --project="${SUPERADMIN_PROJECT}" \
     --format="value(status.url)" 2>/dev/null || echo "NOT FOUND")
   sa_min=$(gcloud run services describe "${sa_service}" \
-    --region="${REGION}" --project="${superadmin_project}" \
+    --region="${REGION}" --project="${SUPERADMIN_PROJECT}" \
     --format="value(spec.template.metadata.annotations.autoscaling.knative.dev/minScale)" 2>/dev/null || echo "?")
   sa_max=$(gcloud run services describe "${sa_service}" \
-    --region="${REGION}" --project="${superadmin_project}" \
+    --region="${REGION}" --project="${SUPERADMIN_PROJECT}" \
     --format="value(spec.template.metadata.annotations.autoscaling.knative.dev/maxScale)" 2>/dev/null || echo "?")
   echo -e "    Cloud Run: ${sa_url}"
   echo -e "    Scale:    min=${sa_min} max=${sa_max}"
 
   # EA Platform Cloud Run
-  echo -e "  ${BOLD}EA Platform (${ea_project})${RESET}"
+  echo -e "  ${BOLD}EA Platform (${EA_PROJECT})${RESET}"
   local ea_service
-  ea_service=$(resolve_service_name "${ea_project}" "${env}")
+  ea_service=$(resolve_service_name "${EA_PROJECT}")
   local ea_url ea_min ea_max
   ea_url=$(gcloud run services describe "${ea_service}" \
-    --region="${REGION}" --project="${ea_project}" \
+    --region="${REGION}" --project="${EA_PROJECT}" \
     --format="value(status.url)" 2>/dev/null || echo "NOT FOUND")
   ea_min=$(gcloud run services describe "${ea_service}" \
-    --region="${REGION}" --project="${ea_project}" \
+    --region="${REGION}" --project="${EA_PROJECT}" \
     --format="value(spec.template.metadata.annotations.autoscaling.knative.dev/minScale)" 2>/dev/null || echo "?")
   ea_max=$(gcloud run services describe "${ea_service}" \
-    --region="${REGION}" --project="${ea_project}" \
+    --region="${REGION}" --project="${EA_PROJECT}" \
     --format="value(spec.template.metadata.annotations.autoscaling.knative.dev/maxScale)" 2>/dev/null || echo "?")
   echo -e "    Cloud Run: ${ea_url}"
   echo -e "    Scale:    min=${ea_min} max=${ea_max}"
 
   # Cloud SQL
   echo -e "  ${BOLD}Cloud SQL${RESET}"
-  local sql_instance="superadmin-${env}"
-  local sql_state sql_tier
-  sql_state=$(gcloud sql instances describe "${sql_instance}" \
-    --project="${superadmin_project}" \
+  local sql_state sql_tier sql_policy
+  sql_state=$(gcloud sql instances describe "${SQL_INSTANCE}" \
+    --project="${SUPERADMIN_PROJECT}" \
     --format="value(state)" 2>/dev/null || echo "NOT FOUND")
-  sql_tier=$(gcloud sql instances describe "${sql_instance}" \
-    --project="${superadmin_project}" \
+  sql_tier=$(gcloud sql instances describe "${SQL_INSTANCE}" \
+    --project="${SUPERADMIN_PROJECT}" \
     --format="value(settings.tier)" 2>/dev/null || echo "N/A")
-  echo -e "    ${sql_instance}: ${sql_tier} — ${sql_state}"
+  sql_policy=$(gcloud sql instances describe "${SQL_INSTANCE}" \
+    --project="${SUPERADMIN_PROJECT}" \
+    --format="value(settings.activationPolicy)" 2>/dev/null || echo "?")
+  echo -e "    ${SQL_INSTANCE}: ${sql_tier} — state=${sql_state} activationPolicy=${sql_policy}"
 }
 
-# ── Stop environment ─────────────────────────────────────────────────────────────
+# ── Stop ────────────────────────────────────────────────────────────────────────
 stop_environment() {
-  local env="$1"
-
-  case "${env}" in
-    staging)
-      local superadmin_project="designfoundry-admin-staging"
-      local ea_project="designfoundry-ea-staging"
-      ;;
-    production)
-      local superadmin_project="designfoundry-admin-production"
-      local ea_project="designfoundry-ea-production"
-      ;;
-  esac
-
-  section "Stopping $(echo "$env" | awk '{for(i=1;i<=length;i++){c=substr($0,i,1);printf"%s",(i==1?toupper(c):c)}}')"
+  section "Stopping Production"
 
   local sa_service
-  sa_service=$(resolve_service_name "${superadmin_project}" "${env}")
-  stop_cloudrun "${superadmin_project}" "${sa_service}"
+  sa_service=$(resolve_service_name "${SUPERADMIN_PROJECT}")
+  stop_cloudrun "${SUPERADMIN_PROJECT}" "${sa_service}"
 
   local ea_service
-  ea_service=$(resolve_service_name "${ea_project}" "${env}")
-  stop_cloudrun "${ea_project}" "${ea_service}"
+  ea_service=$(resolve_service_name "${EA_PROJECT}")
+  stop_cloudrun "${EA_PROJECT}" "${ea_service}"
 
-  local sql_instance="superadmin-${env}"
-  stop_cloudsql "${superadmin_project}" "${sql_instance}"
+  stop_cloudsql "${SUPERADMIN_PROJECT}" "${SQL_INSTANCE}"
 
-  success "$(echo "$env" | awk '{for(i=1;i<=length;i++){c=substr($0,i,1);printf"%s",(i==1?toupper(c):c)}}') stopped"
+  success "Production stopped"
 }
 
-# ── Start environment ───────────────────────────────────────────────────────────
+# ── Start ───────────────────────────────────────────────────────────────────────
 start_environment() {
-  local env="$1"
-
-  case "${env}" in
-    staging)
-      local superadmin_project="designfoundry-admin-staging"
-      local ea_project="designfoundry-ea-staging"
-      ;;
-    production)
-      local superadmin_project="designfoundry-admin-production"
-      local ea_project="designfoundry-ea-production"
-      ;;
-  esac
-
-  section "Starting $(echo "$env" | awk '{for(i=1;i<=length;i++){c=substr($0,i,1);printf"%s",(i==1?toupper(c):c)}}')"
+  section "Starting Production"
 
   local sa_service
-  sa_service=$(resolve_service_name "${superadmin_project}" "${env}")
-  start_cloudrun "${superadmin_project}" "${sa_service}" "0" "2"
+  sa_service=$(resolve_service_name "${SUPERADMIN_PROJECT}")
+  start_cloudrun "${SUPERADMIN_PROJECT}" "${sa_service}" "0" "2"
 
   local ea_service
-  ea_service=$(resolve_service_name "${ea_project}" "${env}")
-  start_cloudrun "${ea_project}" "${ea_service}" "1" "2"
+  ea_service=$(resolve_service_name "${EA_PROJECT}")
+  start_cloudrun "${EA_PROJECT}" "${ea_service}" "1" "2"
 
-  local sql_instance="superadmin-${env}"
-  start_cloudsql "${superadmin_project}" "${sql_instance}"
+  start_cloudsql "${SUPERADMIN_PROJECT}" "${SQL_INSTANCE}"
 
-  success "$(echo "$env" | awk '{for(i=1;i<=length;i++){c=substr($0,i,1);printf"%s",(i==1?toupper(c):c)}}') started"
+  success "Production started"
 }
 
 # ── Usage ────────────────────────────────────────────────────────────────────────
 usage() {
   cat <<EOF
-${BOLD}GCP Cost Control${RESET} — start/stop staging or production infrastructure
-Compatible with Bash 3.2 (macOS default)
+${BOLD}GCP Cost Control${RESET} — start/stop/status the production superadmin infrastructure
+Admin is production-only. Compatible with Bash 3.2 (macOS default).
 
 ${BOLD}USAGE${RESET}
-    ./gcp-cost-control.sh <environment> <action>
-    ./gcp-cost-control.sh all --status
-
-${BOLD}ENVIRONMENTS${RESET}
-    staging     designfoundry-admin-staging + designfoundry-ea-staging
-    production  designfoundry-admin-production + designfoundry-ea-production
-    all         Both environments
+    ./gcp-cost-control.sh <action>
 
 ${BOLD}ACTIONS${RESET}
-    --stop     Scale Cloud Run to 0 instances, stop Cloud SQL
-    --start    Scale Cloud Run back up, start Cloud SQL
-    --status   Show current state of all resources
+    stop     Scale Cloud Run to 0 instances, stop Cloud SQL
+    start    Scale Cloud Run back up, start Cloud SQL
+    status   Show current state of all production resources
 
 ${BOLD}EXAMPLES${RESET}
-    ./gcp-cost-control.sh staging --status
-    ./gcp-cost-control.sh production --stop
-    ./gcp-cost-control.sh all --start
+    ./gcp-cost-control.sh status
+    ./gcp-cost-control.sh stop
+    ./gcp-cost-control.sh start
 
 ${BOLD}PREREQUISITES${RESET}
     gcloud auth login
-    gcloud config set project <your-project>
     IAM roles needed: roles/run.admin, roles/cloudsql.admin
 
 ${BOLD}NOTES${RESET}
-    --stop sets Cloud SQL activationPolicy=NEVER, which pauses compute billing
+    stop sets Cloud SQL activationPolicy=NEVER, which pauses compute billing
     (storage and backups continue to be billed at the usual rate).
-    --start patches it back to ALWAYS.
+    start patches it back to ALWAYS.
 
     Cloud Run at 0 instances = free. Cloud SQL compute is the big-ticket cost.
     For maximum savings: stop both Cloud Run AND Cloud SQL.
@@ -352,40 +304,20 @@ EOF
 # ── Main ────────────────────────────────────────────────────────────────────────
 check_gcloud
 
-if [[ $# -lt 2 ]]; then
+if [[ $# -lt 1 ]]; then
   usage
 fi
 
-ENVIRONMENT="$1"
-ACTION="$2"
+ACTION="$1"
 
+# Accept both bare ("stop") and legacy --flag ("--stop") forms so anyone with
+# the old invocation muscle-memory still gets the right behavior.
 case "${ACTION}" in
-  --stop|--start|--status) ;;
+  stop|--stop)      stop_environment ;;
+  start|--start)    start_environment ;;
+  status|--status)  status_environment ;;
   *)
     error "Unknown action: ${ACTION}"
-    usage
-    ;;
-esac
-
-case "${ENVIRONMENT}" in
-  staging|production)
-    case "${ACTION}" in
-      --stop)    stop_environment "${ENVIRONMENT}" ;;
-      --start)   start_environment "${ENVIRONMENT}" ;;
-      --status)  status_environment "${ENVIRONMENT}" ;;
-    esac
-    ;;
-  all)
-    for env in staging production; do
-      case "${ACTION}" in
-        --stop)    stop_environment "${env}" ;;
-        --start)   start_environment "${env}" ;;
-        --status)  status_environment "${env}" ;;
-      esac
-    done
-    ;;
-  *)
-    error "Unknown environment: ${ENVIRONMENT}"
     usage
     ;;
 esac
