@@ -25,6 +25,10 @@ export function signLicense(payload: LicensePayload, expiresAt?: Date): string {
   const keyId = process.env.LICENSE_KEY_ID || 'dev-2026-01';
   const jti = randomUUID();
 
+  // jsonwebtoken adds `jti` to the JWT payload from the `jwtid` option.
+  // Don't also spread it into the payload object passed to sign() — recent
+  // jsonwebtoken versions throw "Bad options.jwtid option. The payload
+  // already has an jti property" on the conflict.
   const options: jwt.SignOptions = {
     algorithm: 'RS256',
     header: { alg: 'RS256', typ: 'JWT', kid: keyId } as jwt.Algorithm & object,
@@ -36,7 +40,7 @@ export function signLicense(payload: LicensePayload, expiresAt?: Date): string {
     options.expiresIn = Math.floor((expiresAt.getTime() - Date.now()) / 1000);
   }
 
-  return jwt.sign({ ...payload, jti }, privateKey, options);
+  return jwt.sign({ ...payload }, privateKey, options);
 }
 
 /** Wraps a JWT in a PEM-like .lic file format */

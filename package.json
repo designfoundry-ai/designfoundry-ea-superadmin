@@ -7,6 +7,9 @@
     "build": "next build",
     "start": "next start -p 3002",
     "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "test": "jest",
+    "test:watch": "jest --watch",
     "keys:generate": "node scripts/generate-keys.js",
     "db:admin:init": "node scripts/init-admin-db.mjs"
   },
@@ -26,6 +29,7 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/bcryptjs": "^2.4.6",
+    "@types/jest": "^30.0.0",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^20",
     "@types/pg": "^8.20.0",
@@ -33,6 +37,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.4",
+    "jest": "^30.4.2",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

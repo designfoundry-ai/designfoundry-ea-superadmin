@@ -2,14 +2,21 @@
  * DesignFoundry Super Admin Console — API Client
  *
  * Requests go to the rezonator backend at NEXT_PUBLIC_API_URL when set
- * (e.g. http://localhost:3001/api/v1). When unset, requests fall through to
- * the dev-only Next.js routes under /api/superadmin/* that query Postgres
- * directly — these are blocked by middleware in any env where
+ * (e.g. http://localhost:3001/api/v1). When unset OR empty, requests fall
+ * through to the dev-only Next.js routes under /api/superadmin/* that query
+ * Postgres directly — these are blocked by middleware in any env where
  * NEXT_PUBLIC_API_URL is configured. Endpoints live under /superadmin/* on
  * the backend. Auth: Bearer token with role=superadmin.
+ *
+ * NOTE: We can't use `??` here because Next.js inlines an empty `.env`
+ * value as the literal empty string, not undefined. A truthy check is
+ * required so that `NEXT_PUBLIC_API_URL=` falls through to the local API.
  */
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '/api';
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_URL && process.env.NEXT_PUBLIC_API_URL.length > 0
+    ? process.env.NEXT_PUBLIC_API_URL
+    : '/api';
 
 export interface ApiResponse<T> {
   data: T;
@@ -168,12 +175,18 @@ export async function getTenantUsers(tenantId: string) {
   return request<UserList>(`/superadmin/users?tenantId=${encodeURIComponent(tenantId)}`);
 }
 
-export async function disableUser(id: string) {
-  return request<void>(`/superadmin/users/${id}/disable`, { method: 'POST' });
+export async function disableUser(id: string, tenantId: string) {
+  return request<void>(`/superadmin/users/${id}/disable`, {
+    method: 'POST',
+    body: JSON.stringify({ tenantId }),
+  });
 }
 
-export async function enableUser(id: string) {
-  return request<void>(`/superadmin/users/${id}/enable`, { method: 'POST' });
+export async function enableUser(id: string, tenantId: string) {
+  return request<void>(`/superadmin/users/${id}/enable`, {
+    method: 'POST',
+    body: JSON.stringify({ tenantId }),
+  });
 }
 
 export interface UserFilters {

@@ -9,6 +9,14 @@ const LOGIN_URL = API_BASE
   ? `${API_BASE}/superadmin/login`
   : '/api/superadmin/login';
 
+// In dev (no real backend) show the seeded credentials as the placeholder
+// so a fresh contributor can sign in without grepping the codebase.
+const IS_DEV_FALLBACK = !API_BASE;
+const EMAIL_PLACEHOLDER = IS_DEV_FALLBACK
+  ? 'super@designfoundry.app'
+  : 'you@designfoundry.ai';
+const PASSWORD_PLACEHOLDER = IS_DEV_FALLBACK ? 'superadmin123' : '••••••••';
+
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState('');
@@ -60,6 +68,13 @@ export default function LoginPage() {
             <p className="text-sm text-slate-500 text-center">
               Sign in with your super admin credentials
             </p>
+            {IS_DEV_FALLBACK && (
+              <p className="text-xs text-amber-600 text-center mt-1">
+                Dev mode — use{' '}
+                <code className="font-mono">super@designfoundry.app</code> /{' '}
+                <code className="font-mono">superadmin123</code>
+              </p>
+            )}
           </div>
 
           {error && (
@@ -79,7 +94,7 @@ export default function LoginPage() {
                 required
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm
                            focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                placeholder="admin@designfoundry.ai"
+                placeholder={EMAIL_PLACEHOLDER}
               />
             </div>
 
@@ -92,7 +107,7 @@ export default function LoginPage() {
                 required
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm
                            focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                placeholder="••••••••"
+                placeholder={PASSWORD_PLACEHOLDER}
               />
             </div>
 

@@ -33,6 +33,3 @@ next-env.d.ts
 # Testing
 playwright-report/
 test-results/
-.next
-node_modules
-*.env*

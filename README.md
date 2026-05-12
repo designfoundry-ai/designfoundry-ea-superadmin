@@ -46,7 +46,11 @@ npm run dev
 ## Environment Variables
 
 ```env
-NEXT_PUBLIC_API_URL=https://api.designfoundry.ai/api/v1   # Main platform API
+# Production / staging only — points the frontend at the rezonator backend.
+# For local dev leave empty so the app uses the local /api/superadmin/*
+# fallback routes (which accept dev creds super@designfoundry.app /
+# superadmin123). Setting a production URL locally breaks login.
+NEXT_PUBLIC_API_URL=
 NODE_ENV=development
 ```
 
@@ -90,34 +94,49 @@ Login with a `role: superadmin` JWT from the main platform. Token stored in loca
 ### 1. One-time GCP Setup
 
 ```bash
-# Set your project ID
-export GCP_PROJECT_ID=your-project-id
-
-# Run the setup script
-./scripts/gcp-setup.sh
+# Set your project ID + scope, then run the provisioner
+GCP_PROJECT_ID=designfoundry-admin-staging \
+GCP_REGION=europe-central2 \
+RESOURCE_SCOPE=staging \
+bash deploy/setup-gcp.sh
 ```
 
 The script:
-- Enables GCP APIs (Cloud Run, Artifact Registry, IAM)
+- Enables GCP APIs (Cloud Run, Artifact Registry, IAM, Cloud SQL, Pub/Sub, Secret Manager)
 - Creates the Artifact Registry Docker repository
-- Creates a deployment service account with appropriate roles
-- Deploys an initial placeholder Cloud Run service
-- Prints the GitHub Actions variables to add
+- Provisions Cloud SQL (Postgres 15) and waits for it to be RUNNABLE
+- Creates `designfoundry-superadmin` (runtime SA) + `github-deployer` (CI SA) with least-privilege roles
+- Configures Workload Identity Federation (pool + provider at `locations/global`)
+- Generates the RSA-2048 license-signing keypair and stores the public key in Secret Manager
+- Creates Pub/Sub topics; defers the push subscription until Cloud Run is deployed
+- Prints the GitHub Environment variables/secrets to wire up
 
-### 2. GitHub Actions Variables
+Then create the matching GitHub Environments:
 
-Add to `https://github.com/designfoundry-ai/designfoundry-ea-superadmin/settings/variables/actions`:
+```bash
+GITHUB_ORG=designfoundry-ai \
+REPO=designfoundry-ea-superadmin \
+WI_PROVIDER_STAGING="projects/.../locations/global/workloadIdentityPools/.../providers/..." \
+WI_PROVIDER_PRODUCTION="projects/.../locations/global/workloadIdentityPools/.../providers/..." \
+JWT_SECRET_STAGING="..." \
+JWT_SECRET_PRODUCTION="..." \
+./deploy/setup-github-environments.sh
+```
 
-| Variable | Value |
-|---|---|
-| `GCP_PROJECT_ID` | Your GCP project ID |
-| `GCP_REGION` | `europe-central2` |
-| `ARTIFACT_REGISTRY_REPO` | `designfoundry` |
-| `CLOUD_RUN_SERVICE` | `designfoundry-ea-superadmin` |
-| `NEXT_PUBLIC_API_URL` | `https://api.designfoundry.ai/api/v1` |
-| `GCP_WORKLOAD_IDENTITY_PROVIDER` | Full provider resource name (after creating Workload Identity Pool) |
-| `GCP_DEPLOYER_SERVICE_ACCOUNT` | `superadmin-deployer@project.iam.gserviceaccount.com` |
-| `GCP_FRONTEND_SERVICE_ACCOUNT` | Same as above |
+### 2. GitHub Environment Variables
+
+Set per environment at `https://github.com/designfoundry-ai/designfoundry-ea-superadmin/settings/environments` (the script above does this for you):
+
+| Variable | Staging | Production |
+|---|---|---|
+| `GCP_PROJECT_ID` | `designfoundry-admin-staging` | `designfoundry-admin-production` |
+| `GCP_REGION` | `europe-central2` | `europe-central2` |
+| `ARTIFACT_REGISTRY_REPO` | `superadmin` | `superadmin` |
+| `CLOUD_RUN_SERVICE` | `designfoundry-ea-superadmin-staging` | `designfoundry-ea-superadmin` |
+| `NEXT_PUBLIC_API_URL` | `https://staging.your-platform-domain/api/v1` | `https://your-platform-domain/api/v1` |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | (from `setup-gcp.sh` output) | (from `setup-gcp.sh` output) |
+| `SUPERADMIN_SERVICE_ACCOUNT` | `designfoundry-superadmin@designfoundry-admin-staging.iam.gserviceaccount.com` | `designfoundry-superadmin@designfoundry-admin-production.iam.gserviceaccount.com` |
+| `GCP_DEPLOYER_SERVICE_ACCOUNT` | `github-deployer@designfoundry-admin-staging.iam.gserviceaccount.com` | `github-deployer@designfoundry-admin-production.iam.gserviceaccount.com` |
 
 ### 3. GitHub Actions — Enable
 

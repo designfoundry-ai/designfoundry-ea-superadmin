@@ -13,15 +13,51 @@ concurrency:
   group: deploy-production
   cancel-in-progress: true
 
+env:
+  # Opt in to Node.js 24 for GitHub JavaScript actions. GitHub is migrating
+  # from Node 20 → Node 24 on 2026-09-16; setting this flag adopts the new
+  # runtime early and silences the deprecation warning that already fires
+  # on every Node 20 action invocation.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
-  build:
-    name: Build & Push
+  deploy:
+    name: Deploy to Cloud Run
     runs-on: ubuntu-latest
-    outputs:
-      image_tag: ${{ steps.meta.outputs.image_tag }}
+    # Bind to the production environment so vars.* + secrets.* resolve from
+    # the production Environment scope (set up by
+    # deploy/setup-github-environments.sh).
+    environment:
+      name: production
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # NEXT_PUBLIC_API_URL is baked into the frontend bundle at build time.
+      # Fail the workflow up front if it's missing rather than handing an
+      # empty value to the composite and silently shipping a bundle pointed
+      # at nowhere.
+      - name: Validate required vars
+        shell: bash
+        run: |
+          : "${API_URL:?ERROR: NEXT_PUBLIC_API_URL repository variable not set — configure it at Settings > Environments > production}"
+        env:
+          API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+
+      # Defense-in-depth alongside the runtime guard in
+      # src/app/api/webhooks/stripe/route.ts. If the production Stripe webhook
+      # secret somehow still resolves to the dev placeholder, refuse to deploy
+      # — accepting any signed-or-unsigned payload as authentic would defeat
+      # the only auth mechanism the webhook has.
+      - name: Reject placeholder Stripe webhook secret
+        shell: bash
+        run: |
+          if [[ "${STRIPE_WEBHOOK_SECRET}" == "whsec_placeholder" ]]; then
+            echo "::error::STRIPE_WEBHOOK_SECRET is the dev placeholder ('whsec_placeholder'). Set the real value from Stripe Dashboard → Developers → Webhooks before deploying."
+            exit 1
+          fi
+        env:
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
 
       - name: Resolve image tag
         id: meta
@@ -30,92 +66,32 @@ jobs:
           TAG="${GITHUB_SHA}"
           echo "image_tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+      - name: Deploy via composite action
+        id: deploy
+        uses: ./.github/actions/deploy-gcp
         with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log into Artifact Registry
-        shell: bash
-        run: |
-          TOKEN=$(gcloud auth print-access-token)
-          echo "$TOKEN" | docker login europe-central2-docker.pkg.dev -u oauth2accesstoken --password-stdin
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile
-          tags: |
-            ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REGISTRY_REPO }}/designfoundry-ea-superadmin:${{ steps.meta.outputs.image_tag }}
-            ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REGISTRY_REPO }}/designfoundry-ea-superadmin:latest
-          push: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          build-args: |
-            NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL }}
-
-  deploy:
-    name: Deploy to Cloud Run
-    runs-on: ubuntu-latest
-    needs: build
-    environment: production
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
-
-      - name: Set up gcloud
-        uses: google-github-actions/setup-gcloud@v2
-        with:
-          project_id: ${{ vars.GCP_PROJECT_ID }}
-
-      - name: Configure Docker auth for Artifact Registry
-        shell: bash
-        run: |
-          gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
-
-      - name: Deploy to Cloud Run
-        shell: bash
-        run: |
-          gcloud run deploy "${{ vars.CLOUD_RUN_SERVICE }}" \
-            --image="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REGISTRY_REPO }}/designfoundry-ea-superadmin:${{ needs.build.outputs.image_tag }}" \
-            --region="${{ vars.GCP_REGION }}" \
-            --platform=managed \
-            --service-account="${{ vars.SUPERADMIN_SERVICE_ACCOUNT }}" \
-            --set-env-vars="NODE_ENV=production,NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL }},ADMIN_DATABASE_URL=${{ secrets.ADMIN_DATABASE_URL }},RSA_PRIVATE_KEY=${{ secrets.RSA_PRIVATE_KEY }},LICENSE_KEY_ID=${{ vars.LICENSE_KEY_ID }}" \
-            --set-secrets="JWT_SECRET=${{ vars.JWT_SECRET_NAME || 'superadmin-jwt-secret' }}:latest" \
-            --min-instances=0 \
-            --max-instances=2 \
-            --memory=512Mi \
-            --cpu=1 \
-            --port=3000 \
-            --allow-unauthenticated
-
-      - name: Get Cloud Run URL
-        id: url
-        shell: bash
-        run: |
-          URL=$(gcloud run services describe "${{ vars.CLOUD_RUN_SERVICE }}" \
-            --region="${{ vars.GCP_REGION }}" \
-            --format="value(status.url)")
-          echo "service_url=$URL" >> "$GITHUB_OUTPUT"
+          environment_name: production
+          image_tag: ${{ steps.meta.outputs.image_tag }}
+          gcp_project_id: ${{ vars.GCP_PROJECT_ID }}
+          gcp_region: ${{ vars.GCP_REGION }}
+          gcp_workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          gcp_deployer_service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+          artifact_registry_repo: ${{ vars.ARTIFACT_REGISTRY_REPO }}
+          cloud_run_service: ${{ vars.CLOUD_RUN_SERVICE }}
+          service_account: ${{ vars.SUPERADMIN_SERVICE_ACCOUNT }}
+          next_public_api_url: ${{ vars.NEXT_PUBLIC_API_URL }}
+          jwt_secret_name: ${{ vars.JWT_SECRET_NAME || 'superadmin-jwt-secret' }}
+          # Production-only env vars on top of the composite's base set.
+          # Entries are separated by '||' (composite uses gcloud's alternate
+          # delimiter form). Values may contain commas / newlines safely.
+          extra_env_vars: ADMIN_DATABASE_URL=${{ secrets.ADMIN_DATABASE_URL }}||RSA_PRIVATE_KEY=${{ secrets.RSA_PRIVATE_KEY }}||LICENSE_KEY_ID=${{ vars.LICENSE_KEY_ID }}
 
       - name: Deployment summary
         shell: bash
         run: |
           {
             echo "## Super Admin — Production Deploy"
-            echo "- Image tag: ${{ needs.build.outputs.image_tag }}"
-            echo "- Service URL: ${{ steps.url.outputs.service_url }}"
+            echo "- Image tag: ${{ steps.meta.outputs.image_tag }}"
+            echo "- Service URL: ${{ steps.deploy.outputs.service_url }}"
             echo "- API URL: ${{ vars.NEXT_PUBLIC_API_URL }}"
           } >> "$GITHUB_STEP_SUMMARY"
