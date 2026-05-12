@@ -40,7 +40,7 @@ GITHUB_DEPLOYER_SA="github-deployer"
 WORKLOAD_IDENTITY_POOL="superadmin-pool"
 WORKLOAD_IDENTITY_PROVIDER="superadmin-github"
 CLOUD_SQL_INSTANCE="superadmin-${SCOPE}"
-LICENCE_KEY_ID="prod-2026-01"
+LICENSE_KEY_ID="prod-2026-01"
 KEYS_DIR="keys"
 
 # ── Validate gcloud ───────────────────────────────────────────────────────────
@@ -164,12 +164,38 @@ create_cloudsql() {
       --project="${PROJECT_ID}" \
       --quiet 2>&1 | grep -v "already exists" || true
 
-    # Wait for instance to be ready
-    info "Waiting for Cloud SQL instance to be ready..."
-    gcloud sql instances describe "${CLOUD_SQL_INSTANCE}" \
-      --project="${PROJECT_ID}" \
-      --format="value(state)" 2>/dev/null | grep -q RUNNING || \
-      sleep 30
+    # Poll for RUNNABLE state. Cloud SQL provisioning typically takes 5–10 min;
+    # cap the wait at ~10 min and hard-error rather than continuing with an
+    # instance the subsequent `databases create` would race against.
+    info "Waiting for Cloud SQL instance to become RUNNABLE..."
+    local sql_ready=false
+    for i in $(seq 1 60); do
+      local state
+      state=$(gcloud sql instances describe "${CLOUD_SQL_INSTANCE}" \
+        --project="${PROJECT_ID}" \
+        --format='value(state)' 2>/dev/null || echo MISSING)
+      case "${state}" in
+        RUNNABLE)
+          info "  ready after $((i * 10))s"
+          sql_ready=true
+          break
+          ;;
+        FAILED)
+          error "Cloud SQL provisioning failed (state=FAILED)"
+          exit 1
+          ;;
+        PENDING_CREATE|MAINTENANCE|CREATING|MISSING|UNKNOWN_STATE)
+          sleep 10
+          ;;
+        *)
+          sleep 10
+          ;;
+      esac
+    done
+    if [[ "${sql_ready}" != "true" ]]; then
+      error "Cloud SQL instance '${CLOUD_SQL_INSTANCE}' did not reach RUNNABLE within 10 min"
+      exit 1
+    fi
   fi
 
   # Create database
@@ -200,6 +226,11 @@ create_cloudsql() {
 }
 
 # ── Pub/Sub ─────────────────────────────────────────────────────────────────────
+# Topics are unconditionally created. The push subscription depends on the
+# Cloud Run service URL, which only exists once GitHub Actions has deployed
+# the image — chicken-and-egg on first run. We probe for the service and
+# defer the subscription with clear next-step instructions when it's missing,
+# rather than silently creating a broken subscription pointed at https:///....
 create_pubsub() {
   section "Creating Pub/Sub Topic"
 
@@ -212,13 +243,36 @@ create_pubsub() {
   gcloud pubsub topics create "${TOPIC}-dlq" \
     --project="${PROJECT_ID}" 2>/dev/null || info "DLQ topic already exists"
 
-  # Push subscription to superadmin ingest endpoint
-  # Note: the subscription is created but Cloud Run URL must be known
   local SUBSCRIPTION="superadmin-events-ingest"
-  local PUSH_ENDPOINT="https://$(gcloud run services describe "${CLOUD_RUN_SERVICE}" \
+
+  # Probe Cloud Run service URL — only create the subscription if it exists.
+  local CLOUD_RUN_URL
+  CLOUD_RUN_URL=$(gcloud run services describe "${CLOUD_RUN_SERVICE}" \
     --region="${REGION}" \
     --project="${PROJECT_ID}" \
-    --format="value(status.url)" 2>/dev/null | sed 's|https://||')/api/v1/superadmin/events/ingest"
+    --format="value(status.url)" 2>/dev/null || echo "")
+
+  if [[ -z "${CLOUD_RUN_URL}" ]]; then
+    warn "Cloud Run service '${CLOUD_RUN_SERVICE}' is not deployed yet."
+    warn "Skipping Pub/Sub push subscription creation. After the first GitHub"
+    warn "Actions deploy, re-run this script (it's idempotent) or create the"
+    warn "subscription manually:"
+    echo ""
+    echo "  gcloud pubsub subscriptions create ${SUBSCRIPTION} \\"
+    echo "    --topic=${TOPIC} \\"
+    echo "    --project=${PROJECT_ID} \\"
+    echo "    --push-auth-service-account=${SUPERADMIN_SA}@${PROJECT_ID}.iam.gserviceaccount.com \\"
+    echo "    --push-endpoint=https://<cloud-run-url>/api/v1/superadmin/events/ingest \\"
+    echo "    --ack-deadline=30 \\"
+    echo "    --message-retention-duration=604800 \\"
+    echo "    --max-delivery-attempts=5 \\"
+    echo "    --dead-letter-topic=projects/${PROJECT_ID}/topics/${TOPIC}-dlq"
+    echo ""
+    success "Pub/Sub topics '${TOPIC}' + '${TOPIC}-dlq' ready (subscription deferred)"
+    return 0
+  fi
+
+  local PUSH_ENDPOINT="${CLOUD_RUN_URL}/api/v1/superadmin/events/ingest"
 
   gcloud pubsub subscriptions create "${SUBSCRIPTION}" \
     --topic="${TOPIC}" \
@@ -229,9 +283,9 @@ create_pubsub() {
     --message-retention-duration=604800 \
     --max-delivery-attempts=5 \
     --dead-letter-topic="projects/${PROJECT_ID}/topics/${TOPIC}-dlq" \
-    2>/dev/null || info "Subscription '${SUBSCRIPTION}' already exists (or Cloud Run not ready yet)"
+    2>/dev/null || info "Subscription '${SUBSCRIPTION}' already exists"
 
-  success "Pub/Sub topic '${TOPIC}' ready"
+  success "Pub/Sub topic '${TOPIC}' + push subscription ready"
 }
 
 # ── Service Accounts ──────────────────────────────────────────────────────────
@@ -283,16 +337,20 @@ grant_sa_roles() {
 setup_wif() {
   section "Setting up Workload Identity Federation"
 
+  # WIF pools must be created at location=global. GitHub's OIDC token does not
+  # carry a region, and google-github-actions/auth expects the provider ARN to
+  # live under locations/global. Creating the pool at locations/${REGION} would
+  # produce an ARN that the action cannot exchange for credentials.
   gcloud iam workload-identity-pools create "${WORKLOAD_IDENTITY_POOL}" \
-    --location="${REGION}" \
+    --location="global" \
     --project="${PROJECT_ID}" \
     --description="GitHub Actions for superadmin repo" \
     2>/dev/null || info "Pool already exists, skipping."
 
-  POOL_NAME="projects/${PROJECT_ID}/locations/${REGION}/workloadIdentityPools/${WORKLOAD_IDENTITY_POOL}"
+  POOL_NAME="projects/${PROJECT_ID}/locations/global/workloadIdentityPools/${WORKLOAD_IDENTITY_POOL}"
 
   gcloud iam workload-identity-pools providers create-github "${WORKLOAD_IDENTITY_PROVIDER}" \
-    --location="${REGION}" \
+    --location="global" \
     --workload-identity-pool="${WORKLOAD_IDENTITY_POOL}" \
     --project="${PROJECT_ID}" \
     --attribute-mapping="google.subject=assertion.sub,actor=assertion.actor,repository=assertion.repository" \
@@ -307,7 +365,7 @@ setup_wif() {
     --member="principalSet://${POOL_NAME}/repository/designfoundry-ai/designfoundry-ea-superadmin" \
     --quiet 2>/dev/null || info "WIF binding already exists"
 
-  WI_PROVIDER_FULL="projects/${PROJECT_NUMBER}/locations/${REGION}/workloadIdentityPools/${WORKLOAD_IDENTITY_POOL}/providers/${WORKLOAD_IDENTITY_PROVIDER}"
+  WI_PROVIDER_FULL="projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${WORKLOAD_IDENTITY_POOL}/providers/${WORKLOAD_IDENTITY_PROVIDER}"
   success "WIF configured"
 }
 
@@ -377,7 +435,7 @@ print_summary() {
   echo "  5. GitHub Environment variables to set:"
   echo "     ADMIN_DATABASE_URL    = (from superadmin-database-url secret)"
   echo "     RSA_PRIVATE_KEY       = (the full private.pem content as a secret)"
-  echo "     LICENSE_KEY_ID        = ${LICENCE_KEY_ID}"
+  echo "     LICENSE_KEY_ID        = ${LICENSE_KEY_ID}"
   echo ""
   echo "  6. WIF Provider (GitHub variable):"
   echo "     GCP_WORKLOAD_IDENTITY_PROVIDER = ${WI_PROVIDER_FULL}"
