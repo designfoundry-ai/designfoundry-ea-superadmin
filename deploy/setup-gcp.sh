@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # GCP resource setup for designfoundry-ea-superadmin
-# Run once per GCP project, or once for both via RESOURCE_SCOPE=both
+# Run once. Admin is production-only — there is no staging deploy.
 #
 # Usage:
 #   GCP_PROJECT_ID=designfoundry-admin-production \
 #   GCP_REGION=europe-central2 \
-#   RESOURCE_SCOPE=production \
 #   bash deploy/setup-gcp.sh
 #
-# RESOURCE_SCOPE: staging | production | both (default: production)
+# The script is idempotent. Re-running after the first Cloud Run deploy
+# also materializes the deferred Pub/Sub push subscription.
 
 set -euo pipefail
 
@@ -31,7 +31,6 @@ section() { echo ""; echo -e "${BOLD}${CYAN}═══ $1 ═══${RESET}"; }
 # ── Config ───────────────────────────────────────────────────────────────────
 PROJECT_ID="${GCP_PROJECT_ID:?Set GCP_PROJECT_ID}"
 REGION="${GCP_REGION:-europe-central2}"
-SCOPE="${RESOURCE_SCOPE:-production}"
 
 ARTIFACT_REPO="${ARTIFACT_REPO:-superadmin}"
 CLOUD_RUN_SERVICE="${CLOUD_RUN_SERVICE:-designfoundry-admin}"
@@ -39,7 +38,7 @@ SUPERADMIN_SA="designfoundry-superadmin"
 GITHUB_DEPLOYER_SA="github-deployer"
 WORKLOAD_IDENTITY_POOL="superadmin-pool"
 WORKLOAD_IDENTITY_PROVIDER="superadmin-github"
-CLOUD_SQL_INSTANCE="superadmin-${SCOPE}"
+CLOUD_SQL_INSTANCE="superadmin-production"
 LICENSE_KEY_ID="prod-2026-01"
 KEYS_DIR="keys"
 
@@ -56,7 +55,6 @@ check_gcloud() {
   fi
   info "Using account: ${ACTIVE_ACCOUNT}"
   info "Target project: ${PROJECT_ID}"
-  info "Scope: ${SCOPE}"
 }
 
 # ── Enable APIs ────────────────────────────────────────────────────────────────
