@@ -24,6 +24,13 @@ jobs:
   build:
     name: Build & Push
     runs-on: ubuntu-latest
+    # Bind to the production environment so vars.NEXT_PUBLIC_API_URL resolves
+    # from the production Environment scope (set up by
+    # deploy/setup-github-environments.sh). Without this, the lookup falls
+    # back to repo-level vars only and the Validate step below hard-fails
+    # because environment-scoped variables aren't visible.
+    environment:
+      name: production
     outputs:
       image_tag: ${{ steps.meta.outputs.image_tag }}
     steps:
