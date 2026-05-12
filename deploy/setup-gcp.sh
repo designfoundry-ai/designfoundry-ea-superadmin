@@ -347,8 +347,6 @@ setup_wif() {
     --description="GitHub Actions for superadmin repo" \
     2>/dev/null || info "Pool already exists, skipping."
 
-  POOL_NAME="projects/${PROJECT_ID}/locations/global/workloadIdentityPools/${WORKLOAD_IDENTITY_POOL}"
-
   gcloud iam workload-identity-pools providers create-github "${WORKLOAD_IDENTITY_PROVIDER}" \
     --location="global" \
     --workload-identity-pool="${WORKLOAD_IDENTITY_POOL}" \
@@ -357,12 +355,24 @@ setup_wif() {
     --attribute-condition="repository=='designfoundry-ai/designfoundry-ea-superadmin'" \
     2>/dev/null || info "Provider already exists, skipping."
 
+  # Resolve project number — required for the principalSet member URL and
+  # the WI_PROVIDER_FULL summary value. WIF resource paths use the numeric
+  # projectNumber, not the human-readable projectId.
   PROJECT_NUMBER=$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')
+
+  # Canonical principalSet shape for a GitHub repository:
+  #   principalSet://iam.googleapis.com/projects/{NUMBER}/locations/global/\
+  #     workloadIdentityPools/{POOL}/attribute.{ATTR}/{VALUE}
+  # The previous form (missing iam.googleapis.com/, using projectId instead
+  # of projectNumber, and /repository/ instead of /attribute.repository/)
+  # would not have matched any incoming OIDC token attribute and silently
+  # produced a binding the token exchange could never satisfy.
+  local PRINCIPAL_SET="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${WORKLOAD_IDENTITY_POOL}/attribute.repository/designfoundry-ai/designfoundry-ea-superadmin"
 
   gcloud iam service-accounts add-iam-policy-binding "${GITHUB_DEPLOYER_SA_EMAIL}" \
     --project="${PROJECT_ID}" \
     --role="roles/iam.workloadIdentityUser" \
-    --member="principalSet://${POOL_NAME}/repository/designfoundry-ai/designfoundry-ea-superadmin" \
+    --member="${PRINCIPAL_SET}" \
     --quiet 2>/dev/null || info "WIF binding already exists"
 
   WI_PROVIDER_FULL="projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${WORKLOAD_IDENTITY_POOL}/providers/${WORKLOAD_IDENTITY_PROVIDER}"
