@@ -15,7 +15,6 @@ import {
   Settings,
   ScrollText,
   ChevronRight,
-  Shield,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 
