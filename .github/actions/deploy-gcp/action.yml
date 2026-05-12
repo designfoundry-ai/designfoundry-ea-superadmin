@@ -13,7 +13,7 @@ description: |
 
 inputs:
   environment_name:
-    description: Environment label used in step names / logs (e.g. 'staging' or 'production')
+    description: Environment label used in step names / logs (currently always 'production' — admin has no staging deploy)
     required: true
   image_tag:
     description: Image tag to build/push/deploy (e.g. the commit SHA)
@@ -65,7 +65,7 @@ inputs:
       occurs inside DB URLs, RSA PEM bodies, JWT secrets, or license IDs.
 
       Production passes ADMIN_DATABASE_URL, RSA_PRIVATE_KEY, LICENSE_KEY_ID
-      via this input; staging leaves it empty.
+      via this input.
     required: false
     default: ""
 

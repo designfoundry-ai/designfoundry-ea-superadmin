@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # setup-github-environments.sh
-# Creates staging + production GitHub Environments for designfoundry-ea-superadmin
+# Creates the production GitHub Environment for designfoundry-ea-superadmin.
 # Run AFTER deploy/setup-gcp.sh — values come from that script's output.
+#
+# Admin is production-only; there is no staging deploy.
 #
 # Usage:
 #   GITHUB_ORG=designfoundry-ai \
 #   REPO=designfoundry-ea-superadmin \
-#   WI_PROVIDER_STAGING="projects/123456789/locations/global/workloadIdentityPools/superadmin-pool/providers/superadmin-github" \
 #   WI_PROVIDER_PRODUCTION="projects/987654321/locations/global/workloadIdentityPools/superadmin-pool/providers/superadmin-github" \
-#   JWT_SECRET_STAGING="abc123..." \
 #   JWT_SECRET_PRODUCTION="xyz789..." \
 #   ./setup-github-environments.sh
 #
@@ -20,9 +20,7 @@ set -euo pipefail
 
 GITHUB_ORG="${GITHUB_ORG:-designfoundry-ai}"
 REPO="${REPO:-designfoundry-ea-superadmin}"
-WI_PROVIDER_STAGING="${WI_PROVIDER_STAGING:?Need Workload Identity Provider for staging}"
 WI_PROVIDER_PRODUCTION="${WI_PROVIDER_PRODUCTION:?Need Workload Identity Provider for production}"
-JWT_SECRET_STAGING="${JWT_SECRET_STAGING:?Need JWT secret for staging}"
 JWT_SECRET_PRODUCTION="${JWT_SECRET_PRODUCTION:?Need JWT secret for production}"
 
 REPO_FULL="${GITHUB_ORG}/${REPO}"
@@ -75,29 +73,6 @@ upsert_secret() {
   echo "    ✓ ${env}/${secret_name}"
 }
 
-# ── Staging Environment ──────────────────────────────────────────────────────
-echo ""
-echo "━━━ STAGING ━━━"
-create_env "staging"
-
-upsert_variable "staging" "GCP_PROJECT_ID"                  "designfoundry-admin-staging"
-upsert_variable "staging" "GCP_REGION"                      "europe-central2"
-upsert_variable "staging" "ARTIFACT_REGISTRY_REPO"          "superadmin"
-upsert_variable "staging" "CLOUD_RUN_SERVICE"               "designfoundry-ea-superadmin-staging"
-upsert_variable "staging" "SUPERADMIN_SERVICE_ACCOUNT"      "designfoundry-superadmin@designfoundry-admin-staging.iam.gserviceaccount.com"
-upsert_variable "staging" "GCP_DEPLOYER_SERVICE_ACCOUNT"    "github-deployer@designfoundry-admin-staging.iam.gserviceaccount.com"
-upsert_variable "staging" "GCP_WORKLOAD_IDENTITY_PROVIDER"  "${WI_PROVIDER_STAGING}"
-upsert_variable "staging" "NEXT_PUBLIC_API_URL"             "https://staging.your-platform-domain/api/v1"
-
-# Idempotent cleanup of the pre-rename variable. Old setups created
-# STAGING_NEXT_PUBLIC_API_URL at the staging-environment scope; since
-# env-scoped vars no longer need a per-env prefix, we use plain
-# NEXT_PUBLIC_API_URL on both environments. Delete the stale name if
-# present; ignore errors so the script stays safe to re-run.
-gh variable delete STAGING_NEXT_PUBLIC_API_URL --env staging --repo "${REPO_FULL}" 2>/dev/null || true
-
-upsert_secret   "staging" "JWT_SECRET"                      "${JWT_SECRET_STAGING}"
-
 # ── Production Environment ──────────────────────────────────────────────────
 echo ""
 echo "━━━ PRODUCTION ━━━"
@@ -122,6 +97,6 @@ echo ""
 echo "  Review at:"
 echo "  https://github.com/${REPO_FULL}/settings/environments"
 echo ""
-echo "  Next: run deploy/setup-gcp.sh for staging + production projects"
-echo "  then push to develop to trigger first staging deploy."
+echo "  Next: run deploy/setup-gcp.sh for the production project,"
+echo "  then push to main to trigger the production deploy."
 echo "============================================================"

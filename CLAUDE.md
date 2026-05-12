@@ -22,28 +22,25 @@ You are helping maintain the DesignFoundry Superadmin application. This file pro
 | `SPECS/R1/R1-14-platform-event-bus.md` | Pub/Sub event ingestion spec |
 | `SPECS/SUMMARY.md` | All R1 feature specs |
 | `deploy/setup-gcp.sh` | One-time GCP provisioning script |
-| `scripts/gcp-cost-control.sh` | Start/stop/scale staging or production infra |
+| `scripts/gcp-cost-control.sh` | Start/stop/status the production Cloud Run + Cloud SQL |
 | `COMMANDS.md` | Quick command reference (gcloud, gh, local dev) |
 
 ## Architecture Decisions
 
-1. **Two-layer auth:** GCP Cloud Run IAM (`allAuthenticatedUsers`) + app JWT email domain check (`@designfoundry.ai`)
-2. **Workload Identity Federation:** GitHub Actions authenticates via WIF, no SA key files stored
-3. **Staging = zero-cost by default:** Cloud Run scaled to 0, no Cloud SQL provisioned
-4. **Production-only for now:** staging deploy is manual (`workflow_dispatch`), not auto on push
-5. **Multitenant SAAS security model:** Option B — each instance's SA manages its own Cloud Run
+1. **Two-layer auth:** GCP Cloud Run IAM (`domain:designfoundry.ai` → `roles/run.invoker`, granted by the deploy step) + app JWT email-domain check (`@designfoundry.ai` enforced in `src/app/api/auth/login/route.ts`). `allAuthenticatedUsers` is blocked by the `constraints/iam.allowedPolicyMemberDomains` org policy.
+2. **Workload Identity Federation:** GitHub Actions authenticates via WIF, no SA key files stored.
+3. **Production-only deployment:** Admin has a single GCP project, a single Cloud Run service, and a single GitHub Environment. There is no staging deploy, no staging project, no `workflow_dispatch`-only branch. Code is reviewed on `develop` via CI; production ships on push to `main`.
+4. **Multitenant SAAS security model:** Option B — each instance's SA manages its own Cloud Run.
 
 ## CI/CD Pipeline
 
-- `main` push → `deploy-production.yml` (auto-deploy to production Cloud Run)
-- `develop` push → `ci.yml` (lint + typecheck only, no auto-deploy)
-- Staging deploy: GitHub Actions → `workflow_dispatch` (manual trigger only)
+- `develop` push → `ci.yml` (lint + typecheck + build + jest; no deploy)
+- `main` push → `deploy-production.yml` (auto-deploy to production Cloud Run via the `./.github/actions/deploy-gcp` composite)
 
 ## GCP Projects
 
 | Project | Project ID | Purpose |
 |---------|------------|---------|
-| Staging | `designfoundry-admin-staging` | 598200600909 — currently scaled to 0 |
 | Production | `designfoundry-admin-production` | 262048612833 |
 
 ## R1 Feature Specs
@@ -54,11 +51,11 @@ All feature specs are in `SPECS/R1/`. Key specs for current work:
 
 ## Important Notes
 
-- **Do not auto-deploy on `develop` push** — this is intentional for zero-cost staging
-- **Database:** `ADMIN_DATABASE_URL` env var points to Cloud SQL for production. Staging uses in-memory/dev fallback.
-- **Pub/Sub:** Not yet provisioned — R1-14 infrastructure (topic, subscription, archival GCS bucket) is pending
-- **Cloud SQL:** Not provisioned for staging. Production Cloud SQL is the superadmin's own DB, separate from EA instances.
-- **Org policy constraint:** `constraints/iam.allowedPolicyMemberDomains` blocks `allAuthenticatedUsers` — Cloud Run requires Google Workspace auth
+- **Do not auto-deploy on `develop` push** — `develop` is the integration branch, gated by `ci.yml`. Promote to production by merging `develop` → `main`.
+- **Database:** `ADMIN_DATABASE_URL` env var points to Cloud SQL for the production superadmin. Local dev uses the `postgresql://design_foundry:design_foundry@localhost:5432/designfoundry_admin` fallback in `lib/admin-db.ts`.
+- **Pub/Sub:** Topics + DLQ provisioned by `deploy/setup-gcp.sh`. The push subscription is deferred until the first Cloud Run deploy exists; re-run the script to materialize it.
+- **Cloud SQL:** Production Cloud SQL is the superadmin's own admin DB, separate from the EA platform DB and from individual EA-instance DBs.
+- **Org policy constraint:** `constraints/iam.allowedPolicyMemberDomains` blocks `allAuthenticatedUsers` — Cloud Run requires Google Workspace auth via `domain:designfoundry.ai` bindings instead.
 
 ## Testing
 
