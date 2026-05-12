@@ -46,6 +46,15 @@ inputs:
     description: Name of the Secret Manager secret bound to JWT_SECRET
     required: false
     default: superadmin-jwt-secret
+  extra_env_vars:
+    description: |
+      Additional --set-env-vars entries, comma-separated KEY=VALUE pairs.
+      Concatenated onto the base set (NODE_ENV, NEXT_PUBLIC_API_URL).
+      Caveat: values must not contain commas — gcloud splits on comma.
+      Newlines and other whitespace are fine. Production passes
+      ADMIN_DATABASE_URL, RSA_PRIVATE_KEY, LICENSE_KEY_ID via this input.
+    required: false
+    default: ""
 
 outputs:
   service_url:
@@ -90,6 +99,11 @@ runs:
 
     - name: Deploy to Cloud Run (${{ inputs.environment_name }})
       shell: bash
+      env:
+        # Pass the user-supplied extras through the env rather than direct
+        # template substitution into the run-block, so multi-line secret
+        # values (PEM keys, etc.) survive without breaking bash quoting.
+        EXTRA_ENV_VARS: ${{ inputs.extra_env_vars }}
       # Two-layer auth (see CLAUDE.md):
       #   Layer 1: Cloud Run IAM — only principals with roles/run.invoker can
       #            hit the service URL. Granted to domain:designfoundry.ai
@@ -99,13 +113,18 @@ runs:
       #            (src/app/api/auth/login/route.ts).
       # --no-allow-unauthenticated closes the IAM layer.
       run: |
+        ENV_VARS="NODE_ENV=production,NEXT_PUBLIC_API_URL=${{ inputs.next_public_api_url }}"
+        if [[ -n "${EXTRA_ENV_VARS}" ]]; then
+          ENV_VARS="${ENV_VARS},${EXTRA_ENV_VARS}"
+        fi
+
         gcloud run deploy "${{ inputs.cloud_run_service }}" \
           --image="${{ inputs.gcp_region }}-docker.pkg.dev/${{ inputs.gcp_project_id }}/${{ inputs.artifact_registry_repo }}/designfoundry-ea-superadmin:${{ inputs.image_tag }}" \
           --region="${{ inputs.gcp_region }}" \
           --project="${{ inputs.gcp_project_id }}" \
           --platform=managed \
           --service-account="${{ inputs.service_account }}" \
-          --set-env-vars="NODE_ENV=production,NEXT_PUBLIC_API_URL=${{ inputs.next_public_api_url }}" \
+          --set-env-vars="${ENV_VARS}" \
           --set-secrets="JWT_SECRET=${{ inputs.jwt_secret_name }}:latest" \
           --min-instances=0 \
           --max-instances=2 \

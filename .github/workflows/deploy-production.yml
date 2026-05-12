@@ -21,25 +21,22 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
-  build:
-    name: Build & Push
+  deploy:
+    name: Deploy to Cloud Run
     runs-on: ubuntu-latest
-    # Bind to the production environment so vars.NEXT_PUBLIC_API_URL resolves
-    # from the production Environment scope (set up by
-    # deploy/setup-github-environments.sh). Without this, the lookup falls
-    # back to repo-level vars only and the Validate step below hard-fails
-    # because environment-scoped variables aren't visible.
+    # Bind to the production environment so vars.* + secrets.* resolve from
+    # the production Environment scope (set up by
+    # deploy/setup-github-environments.sh).
     environment:
       name: production
-    outputs:
-      image_tag: ${{ steps.meta.outputs.image_tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       # NEXT_PUBLIC_API_URL is baked into the frontend bundle at build time.
-      # Fail the workflow up front if it's missing rather than silently
-      # building an image with an empty API base URL.
+      # Fail the workflow up front if it's missing rather than handing an
+      # empty value to the composite and silently shipping a bundle pointed
+      # at nowhere.
       - name: Validate required vars
         shell: bash
         run: |
@@ -54,112 +51,32 @@ jobs:
           TAG="${GITHUB_SHA}"
           echo "image_tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+      - name: Deploy via composite action
+        id: deploy
+        uses: ./.github/actions/deploy-gcp
         with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log into Artifact Registry
-        shell: bash
-        run: |
-          TOKEN=$(gcloud auth print-access-token)
-          echo "$TOKEN" | docker login europe-central2-docker.pkg.dev -u oauth2accesstoken --password-stdin
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile
-          tags: |
-            ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REGISTRY_REPO }}/designfoundry-ea-superadmin:${{ steps.meta.outputs.image_tag }}
-            ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REGISTRY_REPO }}/designfoundry-ea-superadmin:latest
-          push: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          build-args: |
-            NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL }}
-
-  deploy:
-    name: Deploy to Cloud Run
-    runs-on: ubuntu-latest
-    needs: build
-    environment: production
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
-
-      - name: Set up gcloud
-        uses: google-github-actions/setup-gcloud@v2
-        with:
-          project_id: ${{ vars.GCP_PROJECT_ID }}
-
-      - name: Configure Docker auth for Artifact Registry
-        shell: bash
-        run: |
-          gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
-
-      - name: Deploy to Cloud Run
-        shell: bash
-        # Two-layer auth (see CLAUDE.md):
-        #   Layer 1: Cloud Run IAM — only principals with roles/run.invoker can
-        #            hit the service URL. Granted to domain:designfoundry.ai
-        #            in the step below (org policy iam.allowedPolicyMemberDomains
-        #            forbids the broader allAuthenticatedUsers).
-        #   Layer 2: App-level JWT enforces @designfoundry.ai on every request
-        #            (src/app/api/auth/login/route.ts).
-        # --no-allow-unauthenticated closes the IAM layer.
-        run: |
-          gcloud run deploy "${{ vars.CLOUD_RUN_SERVICE }}" \
-            --image="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REGISTRY_REPO }}/designfoundry-ea-superadmin:${{ needs.build.outputs.image_tag }}" \
-            --region="${{ vars.GCP_REGION }}" \
-            --platform=managed \
-            --service-account="${{ vars.SUPERADMIN_SERVICE_ACCOUNT }}" \
-            --set-env-vars="NODE_ENV=production,NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL }},ADMIN_DATABASE_URL=${{ secrets.ADMIN_DATABASE_URL }},RSA_PRIVATE_KEY=${{ secrets.RSA_PRIVATE_KEY }},LICENSE_KEY_ID=${{ vars.LICENSE_KEY_ID }}" \
-            --set-secrets="JWT_SECRET=${{ vars.JWT_SECRET_NAME || 'superadmin-jwt-secret' }}:latest" \
-            --min-instances=0 \
-            --max-instances=2 \
-            --memory=512Mi \
-            --cpu=1 \
-            --port=3000 \
-            --no-allow-unauthenticated
-
-      - name: Grant Workspace domain run.invoker (idempotent)
-        shell: bash
-        # Without this, --no-allow-unauthenticated leaves the service with no
-        # end-user invoker bindings and the app 403s on every login attempt.
-        run: |
-          gcloud run services add-iam-policy-binding "${{ vars.CLOUD_RUN_SERVICE }}" \
-            --region="${{ vars.GCP_REGION }}" \
-            --project="${{ vars.GCP_PROJECT_ID }}" \
-            --member="domain:designfoundry.ai" \
-            --role="roles/run.invoker" \
-            --quiet
-
-      - name: Get Cloud Run URL
-        id: url
-        shell: bash
-        run: |
-          URL=$(gcloud run services describe "${{ vars.CLOUD_RUN_SERVICE }}" \
-            --region="${{ vars.GCP_REGION }}" \
-            --format="value(status.url)")
-          echo "service_url=$URL" >> "$GITHUB_OUTPUT"
+          environment_name: production
+          image_tag: ${{ steps.meta.outputs.image_tag }}
+          gcp_project_id: ${{ vars.GCP_PROJECT_ID }}
+          gcp_region: ${{ vars.GCP_REGION }}
+          gcp_workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          gcp_deployer_service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+          artifact_registry_repo: ${{ vars.ARTIFACT_REGISTRY_REPO }}
+          cloud_run_service: ${{ vars.CLOUD_RUN_SERVICE }}
+          service_account: ${{ vars.SUPERADMIN_SERVICE_ACCOUNT }}
+          next_public_api_url: ${{ vars.NEXT_PUBLIC_API_URL }}
+          jwt_secret_name: ${{ vars.JWT_SECRET_NAME || 'superadmin-jwt-secret' }}
+          # Production-only env vars on top of the composite's base set.
+          # Values must not contain commas (gcloud's --set-env-vars delimiter).
+          extra_env_vars: |
+            ADMIN_DATABASE_URL=${{ secrets.ADMIN_DATABASE_URL }},RSA_PRIVATE_KEY=${{ secrets.RSA_PRIVATE_KEY }},LICENSE_KEY_ID=${{ vars.LICENSE_KEY_ID }}
 
       - name: Deployment summary
         shell: bash
         run: |
           {
             echo "## Super Admin — Production Deploy"
-            echo "- Image tag: ${{ needs.build.outputs.image_tag }}"
-            echo "- Service URL: ${{ steps.url.outputs.service_url }}"
+            echo "- Image tag: ${{ steps.meta.outputs.image_tag }}"
+            echo "- Service URL: ${{ steps.deploy.outputs.service_url }}"
             echo "- API URL: ${{ vars.NEXT_PUBLIC_API_URL }}"
           } >> "$GITHUB_STEP_SUMMARY"
