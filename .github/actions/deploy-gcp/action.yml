@@ -1,38 +1,56 @@
 name: Deploy to GCP
-description: Build, push to Artifact Registry, and deploy to Cloud Run
+description: |
+  Reusable Cloud Run deploy step. Mirrors deploy-production.yml's pattern:
+  Workload Identity auth → build & push to Artifact Registry → Cloud Run
+  deploy with --no-allow-unauthenticated → grant domain:designfoundry.ai
+  the run.invoker binding (two-layer auth, see CLAUDE.md) → emit service URL.
+
+  Caller MUST declare on the job (or workflow):
+    permissions:
+      contents: read
+      id-token: write
+  The id-token permission is required for the OIDC token exchange with GCP.
+
 inputs:
-  google_cloud_credentials:
-    description: JSON credentials for Google Cloud
+  environment_name:
+    description: Environment label used in step names / logs (e.g. 'staging' or 'production')
     required: true
-  google_cloud_workload_identity_provider:
-    description: Workload Identity Provider resource path
+  image_tag:
+    description: Image tag to build/push/deploy (e.g. the commit SHA)
     required: true
-  google_cloud_service_account:
-    description: Service account to impersonate
-    required: true
-  artifact_registry_repo:
-    description: Artifact Registry repository (e.g. superadmin)
-    required: true
-  region:
-    description: GCP region
-    required: true
-  project_id:
+  gcp_project_id:
     description: GCP project ID
     required: true
-  cloud_run_service:
-    description: Cloud Run service name
+  gcp_region:
+    description: GCP region (e.g. europe-central2)
     required: true
-  runtime_service_account:
-    description: Service account for Cloud Run runtime
+  gcp_workload_identity_provider:
+    description: Full WIF provider resource path (projects/N/locations/global/workloadIdentityPools/POOL/providers/PROVIDER)
+    required: true
+  gcp_deployer_service_account:
+    description: GCP service account the workflow impersonates via WIF (the deployer SA)
+    required: true
+  artifact_registry_repo:
+    description: Artifact Registry repository name (e.g. superadmin)
+    required: true
+  cloud_run_service:
+    description: Cloud Run service name to deploy
+    required: true
+  service_account:
+    description: Cloud Run runtime service account (NOT the deployer SA)
     required: true
   next_public_api_url:
-    description: Next public API URL
-    required: false
-    default: ""
+    description: Backend API base URL baked into the Next.js client bundle at build time
+    required: true
   jwt_secret_name:
-    description: JWT secret name in Secret Manager
+    description: Name of the Secret Manager secret bound to JWT_SECRET
     required: false
-    default: "superadmin-jwt-secret"
+    default: superadmin-jwt-secret
+
+outputs:
+  service_url:
+    description: Deployed Cloud Run service URL
+    value: ${{ steps.url.outputs.service_url }}
 
 runs:
   using: composite
@@ -40,18 +58,21 @@ runs:
     - name: Authenticate to Google Cloud
       uses: google-github-actions/auth@v2
       with:
-        workload_identity_provider: ${{ inputs.google_cloud_workload_identity_provider }}
-        service_account: ${{ inputs.google_cloud_service_account }}
+        workload_identity_provider: ${{ inputs.gcp_workload_identity_provider }}
+        service_account: ${{ inputs.gcp_deployer_service_account }}
+
+    - name: Set up gcloud
+      uses: google-github-actions/setup-gcloud@v2
+      with:
+        project_id: ${{ inputs.gcp_project_id }}
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
-    - name: Login to Artifact Registry
-      uses: docker/login-action@v3
-      with:
-        registry: ${{ inputs.region }}-docker.pkg.dev
-        username: oauth2accesstoken
-        password: ${{ steps.auth.outputs.access_token }}
+    - name: Configure Docker auth for Artifact Registry
+      shell: bash
+      run: |
+        gcloud auth configure-docker "${{ inputs.gcp_region }}-docker.pkg.dev" --quiet
 
     - name: Build and push
       uses: docker/build-push-action@v6
@@ -59,30 +80,31 @@ runs:
         context: .
         file: Dockerfile
         tags: |
-          ${{ inputs.region }}-docker.pkg.dev/${{ inputs.project_id }}/${{ inputs.artifact_registry_repo }}/designfoundry-ea-superadmin:${{ steps.meta.outputs.image_tag }}
-          ${{ inputs.region }}-docker.pkg.dev/${{ inputs.project_id }}/${{ inputs.artifact_registry_repo }}/designfoundry-ea-superadmin:latest
+          ${{ inputs.gcp_region }}-docker.pkg.dev/${{ inputs.gcp_project_id }}/${{ inputs.artifact_registry_repo }}/designfoundry-ea-superadmin:${{ inputs.image_tag }}
+          ${{ inputs.gcp_region }}-docker.pkg.dev/${{ inputs.gcp_project_id }}/${{ inputs.artifact_registry_repo }}/designfoundry-ea-superadmin:latest
         push: true
         cache-from: type=gha
         cache-to: type=gha,mode=max
         build-args: |
           NEXT_PUBLIC_API_URL=${{ inputs.next_public_api_url }}
 
-    - name: Deploy to Cloud Run
+    - name: Deploy to Cloud Run (${{ inputs.environment_name }})
       shell: bash
       # Two-layer auth (see CLAUDE.md):
       #   Layer 1: Cloud Run IAM — only principals with roles/run.invoker can
       #            hit the service URL. Granted to domain:designfoundry.ai
-      #            below (org policy iam.allowedPolicyMemberDomains forbids
-      #            the broader allAuthenticatedUsers).
+      #            in the step below (org policy iam.allowedPolicyMemberDomains
+      #            forbids the broader allAuthenticatedUsers).
       #   Layer 2: App-level JWT enforces @designfoundry.ai on every request
       #            (src/app/api/auth/login/route.ts).
       # --no-allow-unauthenticated closes the IAM layer.
       run: |
         gcloud run deploy "${{ inputs.cloud_run_service }}" \
-          --image="${{ inputs.region }}-docker.pkg.dev/${{ inputs.project_id }}/${{ inputs.artifact_registry_repo }}/designfoundry-ea-superadmin:${{ steps.meta.outputs.image_tag }}" \
-          --region="${{ inputs.region }}" \
+          --image="${{ inputs.gcp_region }}-docker.pkg.dev/${{ inputs.gcp_project_id }}/${{ inputs.artifact_registry_repo }}/designfoundry-ea-superadmin:${{ inputs.image_tag }}" \
+          --region="${{ inputs.gcp_region }}" \
+          --project="${{ inputs.gcp_project_id }}" \
           --platform=managed \
-          --service-account="${{ inputs.runtime_service_account }}" \
+          --service-account="${{ inputs.service_account }}" \
           --set-env-vars="NODE_ENV=production,NEXT_PUBLIC_API_URL=${{ inputs.next_public_api_url }}" \
           --set-secrets="JWT_SECRET=${{ inputs.jwt_secret_name }}:latest" \
           --min-instances=0 \
@@ -96,12 +118,10 @@ runs:
       shell: bash
       # Without this, --no-allow-unauthenticated leaves the service with no
       # end-user invoker bindings and the app 403s on every login attempt.
-      # add-iam-policy-binding is idempotent — re-applying on every deploy is
-      # cheap and self-healing if the binding is ever removed manually.
       run: |
         gcloud run services add-iam-policy-binding "${{ inputs.cloud_run_service }}" \
-          --region="${{ inputs.region }}" \
-          --project="${{ inputs.project_id }}" \
+          --region="${{ inputs.gcp_region }}" \
+          --project="${{ inputs.gcp_project_id }}" \
           --member="domain:designfoundry.ai" \
           --role="roles/run.invoker" \
           --quiet
@@ -111,6 +131,7 @@ runs:
       shell: bash
       run: |
         URL=$(gcloud run services describe "${{ inputs.cloud_run_service }}" \
-          --region="${{ inputs.region }}" \
+          --region="${{ inputs.gcp_region }}" \
+          --project="${{ inputs.gcp_project_id }}" \
           --format="value(status.url)")
         echo "service_url=$URL" >> "$GITHUB_OUTPUT"

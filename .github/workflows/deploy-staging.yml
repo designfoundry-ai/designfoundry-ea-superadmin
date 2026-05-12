@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: Optional image/artifact tag override (defaults to current SHA)
+        description: Optional image tag override (defaults to current SHA)
         required: false
         type: string
 
@@ -26,18 +26,22 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
-  package:
-    name: Build image
+  deploy:
+    name: Deploy to staging
     runs-on: ubuntu-latest
-    outputs:
-      image_tag: ${{ steps.meta.outputs.image_tag }}
+    # Bind to the staging environment so vars.* + secrets.* resolve from
+    # the staging Environment's variable/secret map (set up by
+    # deploy/setup-github-environments.sh).
+    environment:
+      name: staging
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       # NEXT_PUBLIC_API_URL is baked into the frontend bundle at build time.
-      # Fail the workflow up front if it's missing rather than silently
-      # building an image pointed at a localhost placeholder.
+      # Fail the workflow up front if it's missing rather than handing an
+      # empty value to the composite action and silently shipping a bundle
+      # pointed at nowhere.
       - name: Validate required vars
         shell: bash
         run: |
@@ -52,64 +56,21 @@ jobs:
           TAG="${{ inputs.image_tag || github.sha }}"
           echo "image_tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build image tarball
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          tags: designfoundry-ea-superadmin:${{ steps.meta.outputs.image_tag }}
-          outputs: type=docker,dest=/tmp/designfoundry-ea-superadmin.tar
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          build-args: |
-            NEXT_PUBLIC_API_URL=${{ vars.STAGING_NEXT_PUBLIC_API_URL }}
-
-      - name: Upload image artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: designfoundry-ea-superadmin-image-${{ steps.meta.outputs.image_tag }}
-          path: /tmp/designfoundry-ea-superadmin.tar
-          retention-days: 7
-
-  deploy:
-    name: Deploy to staging
-    runs-on: ubuntu-latest
-    needs: package
-    environment:
-      name: staging
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download image artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: designfoundry-ea-superadmin-image-${{ needs.package.outputs.image_tag }}
-          path: /tmp/artifacts
-
-      - name: Deploy to Cloud Run via provider adapter
+      - name: Deploy via composite action
+        id: deploy
         uses: ./.github/actions/deploy-gcp
         with:
           environment_name: staging
-          image_tag: ${{ needs.package.outputs.image_tag }}
+          image_tag: ${{ steps.meta.outputs.image_tag }}
           gcp_project_id: ${{ vars.GCP_PROJECT_ID }}
           gcp_region: ${{ vars.GCP_REGION }}
+          gcp_workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          gcp_deployer_service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
           artifact_registry_repo: ${{ vars.ARTIFACT_REGISTRY_REPO }}
           cloud_run_service: ${{ vars.CLOUD_RUN_SERVICE }}
           service_account: ${{ vars.SUPERADMIN_SERVICE_ACCOUNT }}
           next_public_api_url: ${{ vars.STAGING_NEXT_PUBLIC_API_URL }}
           jwt_secret_name: ${{ vars.JWT_SECRET_NAME || 'superadmin-jwt-secret' }}
-          gcp_workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          gcp_deployer_service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
-
-      - name: Get service URL
-        id: url
-        shell: bash
-        run: |
-          echo "service_url=$(gcloud run services describe '${{ vars.CLOUD_RUN_SERVICE }}' --region='${{ vars.GCP_REGION }}' --format='value(status.url)' --project='${{ vars.GCP_PROJECT_ID }}')" >> "$GITHUB_OUTPUT"
 
       - name: Deployment summary
         shell: bash
@@ -117,7 +78,7 @@ jobs:
           {
             echo "## Super Admin — Staging Deploy"
             echo "- Branch: ${{ github.ref_name }}"
-            echo "- Image tag: ${{ needs.package.outputs.image_tag }}"
-            echo "- Service URL: ${{ steps.url.outputs.service_url }}"
+            echo "- Image tag: ${{ steps.meta.outputs.image_tag }}"
+            echo "- Service URL: ${{ steps.deploy.outputs.service_url }}"
             echo "- API URL: ${{ vars.STAGING_NEXT_PUBLIC_API_URL }}"
           } >> "$GITHUB_STEP_SUMMARY"
