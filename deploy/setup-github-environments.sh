@@ -87,7 +87,14 @@ upsert_variable "staging" "CLOUD_RUN_SERVICE"               "designfoundry-ea-su
 upsert_variable "staging" "SUPERADMIN_SERVICE_ACCOUNT"      "designfoundry-superadmin@designfoundry-admin-staging.iam.gserviceaccount.com"
 upsert_variable "staging" "GCP_DEPLOYER_SERVICE_ACCOUNT"    "github-deployer@designfoundry-admin-staging.iam.gserviceaccount.com"
 upsert_variable "staging" "GCP_WORKLOAD_IDENTITY_PROVIDER"  "${WI_PROVIDER_STAGING}"
-upsert_variable "staging" "STAGING_NEXT_PUBLIC_API_URL"     "https://staging.your-platform-domain/api/v1"
+upsert_variable "staging" "NEXT_PUBLIC_API_URL"             "https://staging.your-platform-domain/api/v1"
+
+# Idempotent cleanup of the pre-rename variable. Old setups created
+# STAGING_NEXT_PUBLIC_API_URL at the staging-environment scope; since
+# env-scoped vars no longer need a per-env prefix, we use plain
+# NEXT_PUBLIC_API_URL on both environments. Delete the stale name if
+# present; ignore errors so the script stays safe to re-run.
+gh variable delete STAGING_NEXT_PUBLIC_API_URL --env staging --repo "${REPO_FULL}" 2>/dev/null || true
 
 upsert_secret   "staging" "JWT_SECRET"                      "${JWT_SECRET_STAGING}"
 

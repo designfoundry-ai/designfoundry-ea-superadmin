@@ -45,9 +45,9 @@ jobs:
       - name: Validate required vars
         shell: bash
         run: |
-          : "${API_URL:?ERROR: STAGING_NEXT_PUBLIC_API_URL repository variable not set — configure it at Settings > Environments > staging}"
+          : "${API_URL:?ERROR: NEXT_PUBLIC_API_URL repository variable not set — configure it at Settings > Environments > staging}"
         env:
-          API_URL: ${{ vars.STAGING_NEXT_PUBLIC_API_URL }}
+          API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
 
       - name: Resolve image tag
         id: meta
@@ -69,7 +69,7 @@ jobs:
           artifact_registry_repo: ${{ vars.ARTIFACT_REGISTRY_REPO }}
           cloud_run_service: ${{ vars.CLOUD_RUN_SERVICE }}
           service_account: ${{ vars.SUPERADMIN_SERVICE_ACCOUNT }}
-          next_public_api_url: ${{ vars.STAGING_NEXT_PUBLIC_API_URL }}
+          next_public_api_url: ${{ vars.NEXT_PUBLIC_API_URL }}
           jwt_secret_name: ${{ vars.JWT_SECRET_NAME || 'superadmin-jwt-secret' }}
 
       - name: Deployment summary
@@ -80,5 +80,5 @@ jobs:
             echo "- Branch: ${{ github.ref_name }}"
             echo "- Image tag: ${{ steps.meta.outputs.image_tag }}"
             echo "- Service URL: ${{ steps.deploy.outputs.service_url }}"
-            echo "- API URL: ${{ vars.STAGING_NEXT_PUBLIC_API_URL }}"
+            echo "- API URL: ${{ vars.NEXT_PUBLIC_API_URL }}"
           } >> "$GITHUB_STEP_SUMMARY"

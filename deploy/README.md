@@ -54,7 +54,7 @@ Required variables:
 | `SUPERADMIN_SERVICE_ACCOUNT` | `designfoundry-superadmin@designfoundry-superadmin-staging.iam.gserviceaccount.com` |
 | `GCP_DEPLOYER_SERVICE_ACCOUNT` | `github-deployer@designfoundry-superadmin-staging.iam.gserviceaccount.com` |
 | `GCP_WORKLOAD_IDENTITY_PROVIDER` | Output from `setup-gcp.sh` (full resource name) |
-| `STAGING_NEXT_PUBLIC_API_URL` | `https://<your-staging-platform-url>/api/v1` |
+| `NEXT_PUBLIC_API_URL` | `https://<your-staging-platform-url>/api/v1` |
 
 Required secrets:
 
@@ -68,7 +68,7 @@ Same as `staging` with:
 - `CLOUD_RUN_SERVICE` = `designfoundry-ea-superadmin`
 - `SUPERADMIN_SERVICE_ACCOUNT` = `designfoundry-superadmin@designfoundry-superadmin-production.iam.gserviceaccount.com`
 - `GCP_DEPLOYER_SERVICE_ACCOUNT` = `github-deployer@designfoundry-superadmin-production.iam.gserviceaccount.com`
-- `STAGING_NEXT_PUBLIC_API_URL` → `PRODUCTION_NEXT_PUBLIC_API_URL`
+- `NEXT_PUBLIC_API_URL` uses the production platform URL (same variable name; resolved per environment)
 
 ---
 
