@@ -44,6 +44,21 @@ jobs:
         env:
           API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
 
+      # Defense-in-depth alongside the runtime guard in
+      # src/app/api/webhooks/stripe/route.ts. If the production Stripe webhook
+      # secret somehow still resolves to the dev placeholder, refuse to deploy
+      # — accepting any signed-or-unsigned payload as authentic would defeat
+      # the only auth mechanism the webhook has.
+      - name: Reject placeholder Stripe webhook secret
+        shell: bash
+        run: |
+          if [[ "${STRIPE_WEBHOOK_SECRET}" == "whsec_placeholder" ]]; then
+            echo "::error::STRIPE_WEBHOOK_SECRET is the dev placeholder ('whsec_placeholder'). Set the real value from Stripe Dashboard → Developers → Webhooks before deploying."
+            exit 1
+          fi
+        env:
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+
       - name: Resolve image tag
         id: meta
         shell: bash

@@ -154,4 +154,46 @@ describe('POST /api/webhooks/stripe', () => {
     const json = await res.json();
     expect(json.message).toMatch(/Webhook processing failed/i);
   });
+
+  describe('production placeholder-secret guard', () => {
+    const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
+
+    afterEach(() => {
+      Object.assign(process.env, { NODE_ENV: ORIGINAL_NODE_ENV });
+    });
+
+    it('returns 500 at request time when NODE_ENV=production + secret is the placeholder', async () => {
+      Object.assign(process.env, {
+        NODE_ENV: 'production',
+        STRIPE_WEBHOOK_SECRET: 'whsec_placeholder',
+      });
+
+      // Silence the expected stderr log so the test output stays clean.
+      const errSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        const res = await POST(unsignedRequest('{}'));
+        expect(res.status).toBe(500);
+        const body = await res.json();
+        expect(body.message).toMatch(/misconfigured/i);
+        expect(errSpy).toHaveBeenCalled();
+      } finally {
+        errSpy.mockRestore();
+      }
+    });
+
+    it('throws at module load when NODE_ENV=production + secret is the placeholder', () => {
+      Object.assign(process.env, {
+        NODE_ENV: 'production',
+        STRIPE_WEBHOOK_SECRET: 'whsec_placeholder',
+      });
+
+      // Force a fresh require so the module-top-level guard re-evaluates.
+      expect(() => {
+        jest.isolateModules(() => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          require('@/app/api/webhooks/stripe/route');
+        });
+      }).toThrow(/placeholder/);
+    });
+  });
 });

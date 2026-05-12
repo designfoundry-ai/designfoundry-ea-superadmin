@@ -2,16 +2,51 @@ import { NextRequest, NextResponse } from 'next/server';
 import pool from '@/lib/db';
 import { signLicense, planDefaults } from '@/lib/license';
 
+const PLACEHOLDER_SECRET = 'whsec_placeholder';
+
+// Fail fast at module load if production was deployed with the dev placeholder
+// secret still configured — that would silently bypass signature verification
+// and accept any payload as authentic, defeating the only auth mechanism this
+// public endpoint has. Throwing here surfaces the misconfiguration during the
+// Next.js boot path (visible in the Cloud Run logs immediately on revision
+// rollout) rather than waiting for the first webhook to expose it.
+if (
+  process.env.NODE_ENV === 'production' &&
+  process.env.STRIPE_WEBHOOK_SECRET === PLACEHOLDER_SECRET
+) {
+  throw new Error(
+    '[stripe webhook] STRIPE_WEBHOOK_SECRET is the dev placeholder value in production. ' +
+      'Refusing to load the route. Set the real secret from Stripe Dashboard → Developers → Webhooks.',
+  );
+}
+
 // Stripe webhook — public endpoint, verified via stripe-signature header
 // No admin JWT required; Stripe signature is the auth mechanism.
 export async function POST(req: NextRequest) {
   try {
+    // Defense in depth: re-check on every request in case the module-load
+    // guard above was somehow bypassed (e.g. NODE_ENV got reset post-boot).
+    if (
+      process.env.NODE_ENV === 'production' &&
+      process.env.STRIPE_WEBHOOK_SECRET === PLACEHOLDER_SECRET
+    ) {
+      console.error(
+        '[stripe webhook] STRIPE_WEBHOOK_SECRET is the dev placeholder in production',
+      );
+      return NextResponse.json(
+        { message: 'Webhook secret misconfigured' },
+        { status: 500 },
+      );
+    }
+
     const body = await req.text();
     const signature = req.headers.get('stripe-signature') ?? '';
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET ?? '';
 
-    // Verify Stripe signature when secret is configured
-    if (webhookSecret && webhookSecret !== 'whsec_placeholder') {
+    // Verify Stripe signature when a real secret is configured. The placeholder
+    // value is intentionally a no-op for local dev so testing the route doesn't
+    // require generating real Stripe-signed payloads.
+    if (webhookSecret && webhookSecret !== PLACEHOLDER_SECRET) {
       const verified = await verifyStripeSignature(body, signature, webhookSecret);
       if (!verified) {
         return NextResponse.json({ message: 'Invalid signature' }, { status: 400 });
