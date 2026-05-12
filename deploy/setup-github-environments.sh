@@ -6,11 +6,15 @@
 # Usage:
 #   GITHUB_ORG=designfoundry-ai \
 #   REPO=designfoundry-ea-superadmin \
-#   WI_PROVIDER_STAGING="projects/123456789/locations/europe-central2/workloadIdentityPools/superadmin-pool/providers/superadmin-github" \
-#   WI_PROVIDER_PRODUCTION="projects/987654321/locations/europe-central2/workloadIdentityPools/superadmin-pool/providers/superadmin-github" \
+#   WI_PROVIDER_STAGING="projects/123456789/locations/global/workloadIdentityPools/superadmin-pool/providers/superadmin-github" \
+#   WI_PROVIDER_PRODUCTION="projects/987654321/locations/global/workloadIdentityPools/superadmin-pool/providers/superadmin-github" \
 #   JWT_SECRET_STAGING="abc123..." \
 #   JWT_SECRET_PRODUCTION="xyz789..." \
 #   ./setup-github-environments.sh
+#
+# Prerequisites:
+#   - gh CLI authenticated (gh auth login)
+#   - Write access to the repo's environments + secrets
 
 set -euo pipefail
 
@@ -21,50 +25,54 @@ WI_PROVIDER_PRODUCTION="${WI_PROVIDER_PRODUCTION:?Need Workload Identity Provide
 JWT_SECRET_STAGING="${JWT_SECRET_STAGING:?Need JWT secret for staging}"
 JWT_SECRET_PRODUCTION="${JWT_SECRET_PRODUCTION:?Need JWT secret for production}"
 
-REPO_API="repos/${GITHUB_ORG}/${REPO}"
-GH="gh api --header \"X-GitHub-Api-Version:2022-11-28\""
+REPO_FULL="${GITHUB_ORG}/${REPO}"
+REPO_API="repos/${REPO_FULL}"
+GH_API_VERSION_HEADER=(--header "X-GitHub-Api-Version:2022-11-28")
 
-echo "==> Setting up GitHub Environments for ${GITHUB_ORG}/${REPO}"
+echo "==> Setting up GitHub Environments for ${REPO_FULL}"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+# Create environment (idempotent — PUT semantics: returns 200 whether new or existing).
 create_env() {
   local name="$1"
   echo "==> Creating environment: ${name}..."
-  # GitHub API returns 200 if already exists, so we don't check response
-  $GH "${REPO_API}/environments" -f name="${name}" --silent 2>/dev/null || true
+  gh api "${GH_API_VERSION_HEADER[@]}" \
+    "${REPO_API}/environments/${name}" \
+    -X PUT \
+    --silent >/dev/null
   echo "    ✓ environment '${name}' ready"
 }
 
+# Upsert a non-secret environment variable.
+# `gh variable set` handles create-or-update transparently.
 upsert_variable() {
   local env="$1"
   local var_name="$2"
   local var_value="$3"
-  local body
-  body=$(printf '{"name":"%s","value":"%s"}' "$var_name" "$var_value")
   echo "    Setting ${env}/${var_name}..."
-  # Try update first, if fails try create
-  $GH -H "Accept: application/vnd.github+json" \
-    "${REPO_API}/environments/${env}/variables/${var_name}" \
-    -X PATCH -f name="${var_name}" -f value="${var_value}" \
-    --silent 2>/dev/null || \
-  $GH -H "Accept: application/vnd.github+json" \
-    "${REPO_API}/environments/${env}/variables" \
-    -X POST -f name="${var_name}" -f value="${var_value}" \
-    --silent 2>/dev/null
+  gh variable set "${var_name}" \
+    --env "${env}" \
+    --repo "${REPO_FULL}" \
+    --body "${var_value}" \
+    >/dev/null
   echo "    ✓ ${env}/${var_name}"
 }
 
+# Upsert an environment secret. Must use `gh secret set` (which seals the
+# value with the environment's libsodium public key); raw `gh api` cannot
+# do this because the REST API requires the value already encrypted.
 upsert_secret() {
   local env="$1"
   local secret_name="$2"
   local secret_value="$3"
   echo "    Setting ${env} secret: ${secret_name}..."
-  echo -n "$secret_value" | $GH -H "Accept: application/vnd.github+json" \
-    "${REPO_API}/environments/${env}/secrets/${secret_name}" \
-    -X PUT -F secret="$secret_value" \
-    --silent 2>/dev/null
-  echo "    ✓ ${env}/${secret_name} (updated)"
+  gh secret set "${secret_name}" \
+    --env "${env}" \
+    --repo "${REPO_FULL}" \
+    --body "${secret_value}" \
+    >/dev/null
+  echo "    ✓ ${env}/${secret_name}"
 }
 
 # ── Staging Environment ──────────────────────────────────────────────────────
@@ -72,32 +80,32 @@ echo ""
 echo "━━━ STAGING ━━━"
 create_env "staging"
 
-upsert_variable "staging" "GCP_PROJECT_ID"               "designfoundry-superadmin-staging"
-upsert_variable "staging" "GCP_REGION"                    "europe-central2"
-upsert_variable "staging" "ARTIFACT_REGISTRY_REPO"       "superadmin"
-upsert_variable "staging" "CLOUD_RUN_SERVICE"            "designfoundry-ea-superadmin-staging"
-upsert_variable "staging" "SUPERADMIN_SERVICE_ACCOUNT"   "designfoundry-superadmin@designfoundry-superadmin-staging.iam.gserviceaccount.com"
-upsert_variable "staging" "GCP_DEPLOYER_SERVICE_ACCOUNT"  "github-deployer@designfoundry-superadmin-staging.iam.gserviceaccount.com"
-upsert_variable "staging" "GCP_WORKLOAD_IDENTITY_PROVIDER" "${WI_PROVIDER_STAGING}"
-upsert_variable "staging" "STAGING_NEXT_PUBLIC_API_URL"   "https://staging.your-platform-domain/api/v1"
+upsert_variable "staging" "GCP_PROJECT_ID"                  "designfoundry-admin-staging"
+upsert_variable "staging" "GCP_REGION"                      "europe-central2"
+upsert_variable "staging" "ARTIFACT_REGISTRY_REPO"          "superadmin"
+upsert_variable "staging" "CLOUD_RUN_SERVICE"               "designfoundry-ea-superadmin-staging"
+upsert_variable "staging" "SUPERADMIN_SERVICE_ACCOUNT"      "designfoundry-superadmin@designfoundry-admin-staging.iam.gserviceaccount.com"
+upsert_variable "staging" "GCP_DEPLOYER_SERVICE_ACCOUNT"    "github-deployer@designfoundry-admin-staging.iam.gserviceaccount.com"
+upsert_variable "staging" "GCP_WORKLOAD_IDENTITY_PROVIDER"  "${WI_PROVIDER_STAGING}"
+upsert_variable "staging" "STAGING_NEXT_PUBLIC_API_URL"     "https://staging.your-platform-domain/api/v1"
 
-upsert_secret  "staging" "JWT_SECRET"                     "${JWT_SECRET_STAGING}"
+upsert_secret   "staging" "JWT_SECRET"                      "${JWT_SECRET_STAGING}"
 
 # ── Production Environment ──────────────────────────────────────────────────
 echo ""
 echo "━━━ PRODUCTION ━━━"
 create_env "production"
 
-upsert_variable "production" "GCP_PROJECT_ID"               "designfoundry-superadmin-production"
-upsert_variable "production" "GCP_REGION"                  "europe-central2"
-upsert_variable "production" "ARTIFACT_REGISTRY_REPO"       "superadmin"
-upsert_variable "production" "CLOUD_RUN_SERVICE"            "designfoundry-ea-superadmin"
-upsert_variable "production" "SUPERADMIN_SERVICE_ACCOUNT"   "designfoundry-superadmin@designfoundry-superadmin-production.iam.gserviceaccount.com"
-upsert_variable "production" "GCP_DEPLOYER_SERVICE_ACCOUNT"  "github-deployer@designfoundry-superadmin-production.iam.gserviceaccount.com"
-upsert_variable "production" "GCP_WORKLOAD_IDENTITY_PROVIDER" "${WI_PROVIDER_PRODUCTION}"
-upsert_variable "production" "NEXT_PUBLIC_API_URL"          "https://your-platform-domain/api/v1"
+upsert_variable "production" "GCP_PROJECT_ID"                  "designfoundry-admin-production"
+upsert_variable "production" "GCP_REGION"                      "europe-central2"
+upsert_variable "production" "ARTIFACT_REGISTRY_REPO"          "superadmin"
+upsert_variable "production" "CLOUD_RUN_SERVICE"               "designfoundry-ea-superadmin"
+upsert_variable "production" "SUPERADMIN_SERVICE_ACCOUNT"      "designfoundry-superadmin@designfoundry-admin-production.iam.gserviceaccount.com"
+upsert_variable "production" "GCP_DEPLOYER_SERVICE_ACCOUNT"    "github-deployer@designfoundry-admin-production.iam.gserviceaccount.com"
+upsert_variable "production" "GCP_WORKLOAD_IDENTITY_PROVIDER"  "${WI_PROVIDER_PRODUCTION}"
+upsert_variable "production" "NEXT_PUBLIC_API_URL"             "https://your-platform-domain/api/v1"
 
-upsert_secret  "production" "JWT_SECRET"                    "${JWT_SECRET_PRODUCTION}"
+upsert_secret   "production" "JWT_SECRET"                      "${JWT_SECRET_PRODUCTION}"
 
 echo ""
 echo "============================================================"
@@ -105,7 +113,7 @@ echo "  GitHub Environments — Setup Complete"
 echo "============================================================"
 echo ""
 echo "  Review at:"
-echo "  https://github.com/${GITHUB_ORG}/${REPO}/settings/environments"
+echo "  https://github.com/${REPO_FULL}/settings/environments"
 echo ""
 echo "  Next: run deploy/setup-gcp.sh for staging + production projects"
 echo "  then push to develop to trigger first staging deploy."
