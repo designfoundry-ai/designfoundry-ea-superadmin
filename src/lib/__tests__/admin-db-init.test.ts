@@ -13,12 +13,12 @@ jest.mock('@/lib/admin-db', () => ({
   default: { query: (...args: unknown[]) => query(...args) },
 }));
 
-import { initAdminDb } from '@/lib/admin-db-init';
+// initAdminDb caches its run-promise at module scope, so each test
+// dynamically imports a fresh copy via require() after jest.resetModules().
+// No top-level static import — that would just bind to a stale module copy.
 
 beforeEach(() => {
   query.mockClear();
-  // initAdminDb caches the run-promise — clear the module cache so each
-  // test re-executes the init function from scratch.
   jest.resetModules();
 });
 
