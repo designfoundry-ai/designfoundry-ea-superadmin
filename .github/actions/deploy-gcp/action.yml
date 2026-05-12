@@ -69,6 +69,14 @@ runs:
 
     - name: Deploy to Cloud Run
       shell: bash
+      # Two-layer auth (see CLAUDE.md):
+      #   Layer 1: Cloud Run IAM — only principals with roles/run.invoker can
+      #            hit the service URL. Granted to domain:designfoundry.ai
+      #            below (org policy iam.allowedPolicyMemberDomains forbids
+      #            the broader allAuthenticatedUsers).
+      #   Layer 2: App-level JWT enforces @designfoundry.ai on every request
+      #            (src/app/api/auth/login/route.ts).
+      # --no-allow-unauthenticated closes the IAM layer.
       run: |
         gcloud run deploy "${{ inputs.cloud_run_service }}" \
           --image="${{ inputs.region }}-docker.pkg.dev/${{ inputs.project_id }}/${{ inputs.artifact_registry_repo }}/designfoundry-ea-superadmin:${{ steps.meta.outputs.image_tag }}" \
@@ -82,7 +90,21 @@ runs:
           --memory=512Mi \
           --cpu=1 \
           --port=3000 \
-          --allow-unauthenticated
+          --no-allow-unauthenticated
+
+    - name: Grant Workspace domain run.invoker (idempotent)
+      shell: bash
+      # Without this, --no-allow-unauthenticated leaves the service with no
+      # end-user invoker bindings and the app 403s on every login attempt.
+      # add-iam-policy-binding is idempotent — re-applying on every deploy is
+      # cheap and self-healing if the binding is ever removed manually.
+      run: |
+        gcloud run services add-iam-policy-binding "${{ inputs.cloud_run_service }}" \
+          --region="${{ inputs.region }}" \
+          --project="${{ inputs.project_id }}" \
+          --member="domain:designfoundry.ai" \
+          --role="roles/run.invoker" \
+          --quiet
 
     - name: Get Cloud Run URL
       id: url
