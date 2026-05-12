@@ -147,12 +147,15 @@ describe('POST /api/webhooks/stripe', () => {
     expect(params).toEqual(['cus_xyz']);
   });
 
-  it('returns 500 when the body is valid signature but unparseable JSON', async () => {
+  it('returns 400 (not 500) on malformed JSON to avoid Stripe retry storms', async () => {
+    // Stripe retries 5xx with exponential backoff; a permanent parse
+    // failure on a 5xx would loop until the dashboard endpoint is
+    // manually disabled. 4xx tells Stripe to drop the event.
     const body = '{ not json';
     const res = await POST(signedRequest(body));
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(400);
     const json = await res.json();
-    expect(json.message).toMatch(/Webhook processing failed/i);
+    expect(json.message).toMatch(/invalid json/i);
   });
 
   describe('production placeholder-secret guard', () => {

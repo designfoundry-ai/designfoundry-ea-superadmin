@@ -53,7 +53,17 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const event = JSON.parse(body) as StripeEvent;
+    // Map malformed JSON to 400 explicitly. Stripe retries on 5xx with
+    // exponential backoff, so letting a parse error fall through to the
+    // catch-all 500 below produces a retry storm on payloads that are
+    // permanently bad (will never succeed on retry). 4xx tells Stripe to
+    // drop the event and surface it in the dashboard's failed-events view.
+    let event: StripeEvent;
+    try {
+      event = JSON.parse(body) as StripeEvent;
+    } catch {
+      return NextResponse.json({ message: 'Invalid JSON body' }, { status: 400 });
+    }
 
     switch (event.type) {
       case 'customer.subscription.created':
