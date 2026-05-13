@@ -36,6 +36,28 @@ function looksLikePubSubPush(body: unknown): body is PubSubPushBody {
 }
 
 /**
+ * Shape rezonator's HTTP driver POSTs natively: `{ envelope, attributes? }`.
+ * This is also the body shape rezonator's own /api/v1/platform/events
+ * controller accepts on its end of the bidirectional bridge — accepting it
+ * here keeps cross-app delivery symmetric without forcing the publisher
+ * to re-pack for each direction.
+ */
+interface EnvelopeWrapper {
+  envelope: unknown;
+  attributes?: Record<string, string>;
+}
+
+function looksLikeEnvelopeWrapper(body: unknown): body is EnvelopeWrapper {
+  return (
+    typeof body === 'object' &&
+    body !== null &&
+    'envelope' in body &&
+    typeof (body as { envelope: unknown }).envelope === 'object' &&
+    (body as { envelope: unknown }).envelope !== null
+  );
+}
+
+/**
  * Next.js Route Handler factory. Used by `app/api/events/ingest/route.ts`.
  *
  * Pipeline (mirrors R1-14 §FR-4):
@@ -75,6 +97,12 @@ export function createIngestHandler() {
         } catch {
           return jsonError(400, 'invalid Pub/Sub push payload (data must be base64-encoded JSON envelope)');
         }
+      } else if (looksLikeEnvelopeWrapper(parsed)) {
+        // Rezonator's HTTP driver POSTs `{envelope, attributes}` — its own
+        // controller's body shape. Unwrap to the inner envelope; attributes
+        // are advisory and aren't persisted server-side (the envelope is the
+        // source of truth).
+        parsed = parsed.envelope;
       }
 
       let envelope: PlatformEvent;
