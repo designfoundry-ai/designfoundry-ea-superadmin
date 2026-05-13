@@ -49,6 +49,33 @@ All feature specs are in `SPECS/R1/`. Key specs for current work:
 - **R1-07 (Instance Registry):** Register + manage EA instances
 - **R1-14 (Platform Event Bus):** Pub/Sub subscriber + `platform_events` table
 
+## Event Bus
+
+Cross-app event delivery to rezonator instances. Two driver modes; selected by `EVENT_BUS_MODE`:
+
+| Mode | Use case |
+|---|---|
+| `direct` (default) | HTTP POST to `${instance.url}/api/v1/platform/events` with HMAC-signed envelope + `X-Ingest-Secret` header. Simplest dev shape. |
+| `pubsub` | Publish to a GCP Pub/Sub topic (or local emulator). Production cross-app path. Topic name: `EVENT_BUS_TOPIC` (default `platform-events`). Uses `PUBSUB_EMULATOR_HOST` automatically when set. |
+| `disabled` | No-op publisher. |
+
+Receiver: `POST /api/events/ingest` accepts BOTH shapes:
+- Direct: flat envelope JSON in body.
+- Pub/Sub push: `{ message: { data: <base64-envelope>, attributes, messageId }, subscription }` — handler unwraps via `looksLikePubSubPush()` adapter, then passes to the same `validateEnvelope` path.
+
+Auth: per-instance HMAC. The handler looks up `envelope.instanceId` in `instances`, decrypts the active + pending API keys via `instance-crypto.ts`, and verifies the envelope signature against whichever matches. No shared global secret.
+
+Local emulator workflow (run from `/Users/lukas/Git/rezonator`):
+
+```bash
+./scripts/setup-local-pubsub.sh start    # emulator + topic + push subscription
+# Run rezonator with EVENT_BUS_DRIVER=pubsub (see rezonator CLAUDE.md).
+# Run this superadmin app with `npm run dev` on port 3002. Push subscription
+# routes to host.docker.internal:3002/api/events/ingest by default.
+```
+
+`@google-cloud/pubsub` is a runtime dependency (installed via the same commit that activated this path).
+
 ## Important Notes
 
 - **Do not auto-deploy on `develop` push** — `develop` is the integration branch, gated by `ci.yml`. Promote to production by merging `develop` → `main`.
