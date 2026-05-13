@@ -30,7 +30,11 @@ export interface PublishResult {
   messageId?: string;
 }
 
-const INGEST_PATH = '/api/v1/superadmin/events/ingest';
+// Rezonator's ingest endpoint is @Controller('platform/events') + @Post().
+// The prior path '/api/v1/superadmin/events/ingest' did not exist on the
+// rezonator side and was pre-existing dead code from before the rezonator
+// superadmin module was removed.
+const INGEST_PATH = '/api/v1/platform/events';
 const DEFAULT_TIMEOUT_MS = 5000;
 
 function getMode(): EventBusMode {
@@ -168,13 +172,14 @@ async function publishViaDirectHttp<T>(
   const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
 
   try {
+    // Rezonator's ingest handler reads `body.envelope`, not a flat envelope.
     const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'X-Ingest-Secret': sharedSecret,
       },
-      body: JSON.stringify(envelope),
+      body: JSON.stringify({ envelope }),
       signal: controller.signal,
     });
 

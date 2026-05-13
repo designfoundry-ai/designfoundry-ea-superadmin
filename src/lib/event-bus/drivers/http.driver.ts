@@ -6,7 +6,11 @@ import {
 } from '../types';
 
 const DEFAULT_TIMEOUT_MS = 5000;
-const DEFAULT_INGEST_PATH = '/api/v1/superadmin/events/ingest';
+// Rezonator's ingest endpoint lives at @Controller('platform/events') with
+// a POST handler. The prior path '/api/v1/superadmin/events/ingest' was
+// never a real route on the rezonator side; it broke silently because the
+// publisher was never exercised end-to-end against a live rezonator instance.
+const DEFAULT_INGEST_PATH = '/api/v1/platform/events';
 
 export interface HttpDriverConfig {
   /**
@@ -72,12 +76,20 @@ export class HttpDriver implements EventBusDriver {
       headers['X-Target-Instance'] = attrs.targetInstanceId;
     }
 
+    // Rezonator's ingest handler reads `body.envelope` (and optional
+     // `body.attributes`), not a flat envelope. Wrap accordingly so
+     // the receiving controller's `bus.verify(body?.envelope)` resolves.
+    const requestBody: { envelope: PlatformEvent; attributes?: EventAttributes } = {
+      envelope,
+      attributes: attrs,
+    };
+
     let response: Response;
     try {
       response = await fetch(url, {
         method: 'POST',
         headers,
-        body: JSON.stringify(envelope),
+        body: JSON.stringify(requestBody),
         signal: controller.signal,
         cache: 'no-store',
       });

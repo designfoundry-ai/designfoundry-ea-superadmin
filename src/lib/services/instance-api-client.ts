@@ -71,25 +71,6 @@ export interface PlatformStats {
   diagramCount: number;
 }
 
-export interface PlatformActivityEvent {
-  id: string;
-  tenantId?: string;
-  tenantName?: string;
-  userId?: string;
-  userEmail?: string;
-  eventType: string;
-  severity: string;
-  details: string;
-  createdAt: string;
-}
-
-export interface PlatformActivityList {
-  events: PlatformActivityEvent[];
-  total: number;
-  page: number;
-  limit: number;
-}
-
 export interface PlatformSystem {
   version: string;
   uptimeSeconds: number;
@@ -245,18 +226,6 @@ export async function getUsers(
   const { data } = await call<PlatformUserList>(instanceId, '/platform/users', {
     query,
   });
-  return data;
-}
-
-export async function getActivity(
-  instanceId: string,
-  query: { page?: number; limit?: number } = {},
-): Promise<PlatformActivityList> {
-  const { data } = await call<PlatformActivityList>(
-    instanceId,
-    '/platform/activity',
-    { query },
-  );
   return data;
 }
 
