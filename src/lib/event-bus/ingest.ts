@@ -9,10 +9,38 @@ import { EventBusError, type IngestOutcome, type PlatformEvent } from './types';
 const MAX_ENVELOPE_BYTES = 256 * 1024;
 
 /**
+ * Shape Pub/Sub push subscriptions deliver: the envelope JSON is in the
+ * data field, base64-encoded, with the message itself wrapped in a
+ * { message, subscription } envelope. See https://cloud.google.com/pubsub/docs/push.
+ * Detected by the presence of body.message.data.
+ */
+interface PubSubPushBody {
+  message: {
+    data: string;
+    attributes?: Record<string, string>;
+    messageId?: string;
+    publishTime?: string;
+  };
+  subscription?: string;
+}
+
+function looksLikePubSubPush(body: unknown): body is PubSubPushBody {
+  return (
+    typeof body === 'object' &&
+    body !== null &&
+    'message' in body &&
+    typeof (body as { message: unknown }).message === 'object' &&
+    (body as { message: { data: unknown } }).message !== null &&
+    typeof (body as { message: { data: unknown } }).message.data === 'string'
+  );
+}
+
+/**
  * Next.js Route Handler factory. Used by `app/api/events/ingest/route.ts`.
  *
  * Pipeline (mirrors R1-14 §FR-4):
  *   1. Parse body (drop > 256 KiB).
+ *   1a. If body is a Pub/Sub push wrapper, unwrap to the inner envelope.
  *   2. Structural envelope validation.
  *   3. Look up instance in registry by envelope.instanceId.
  *   4. Verify HMAC signature using the instance's API key.
@@ -35,6 +63,18 @@ export function createIngestHandler() {
         parsed = JSON.parse(raw);
       } catch {
         return jsonError(400, 'invalid JSON body');
+      }
+
+      // Pub/Sub push subscriptions deliver wrapped messages — unwrap to
+      // recover the envelope. Direct-mode HTTP callers send the envelope
+      // unwrapped; both paths converge at validateEnvelope().
+      if (looksLikePubSubPush(parsed)) {
+        try {
+          const decoded = Buffer.from(parsed.message.data, 'base64').toString('utf8');
+          parsed = JSON.parse(decoded);
+        } catch {
+          return jsonError(400, 'invalid Pub/Sub push payload (data must be base64-encoded JSON envelope)');
+        }
       }
 
       let envelope: PlatformEvent;
