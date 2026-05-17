@@ -4,6 +4,11 @@
 // drift between the two. Capture the SQL emitted by initAdminDb() so any
 // future drift fails a test instead of silently shipping.
 
+// Force TS to treat this file as a module so top-level `const query`
+// does not leak into the global scope and collide with the same-named
+// top-level binding in instance-registration.test.ts under flat tsconfig.
+export {};
+
 // jest.mock factories are hoisted above the const declarations; reference
 // the spy via a lazy lambda to defer the lookup past TDZ.
 const query = jest.fn().mockResolvedValue({ rows: [] });

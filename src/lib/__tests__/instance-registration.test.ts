@@ -8,6 +8,11 @@
 // PLATFORM_REGISTRATION_TOKEN holds at call time, and recordHeartbeat is
 // independent of that token entirely (per-instance API key only).
 
+// Force TS to treat this file as a module (not a script) so top-level
+// `const query` does not collide with admin-db-init.test.ts's same-named
+// top-level binding under a flat tsconfig.
+export {};
+
 const query = jest.fn();
 
 jest.mock('@/lib/admin-db', () => ({
