@@ -20,7 +20,7 @@ async function run(): Promise<void> {
       api_key_hash                CHAR(64),
       pending_api_key_encrypted   TEXT,
       pending_api_key_hash        CHAR(64),
-      status                      VARCHAR(16)  NOT NULL DEFAULT 'pending',
+      status                      VARCHAR(32)  NOT NULL DEFAULT 'pending',
       last_health_check           TIMESTAMPTZ,
       last_health_status          VARCHAR(16),
       instance_version            VARCHAR(32),
@@ -38,6 +38,31 @@ async function run(): Promise<void> {
 
   await adminPool.query(`
     CREATE INDEX IF NOT EXISTS idx_instances_status ON instances (status)
+  `);
+
+  // R1-16: self-registration columns. Additive ALTERs so existing rows survive.
+  // Widen status to fit 'awaiting_approval' (17 chars) — existing deployments were VARCHAR(16).
+  await adminPool.query(`
+    ALTER TABLE instances ALTER COLUMN status TYPE VARCHAR(32)
+  `);
+  await adminPool.query(`
+    ALTER TABLE instances ADD COLUMN IF NOT EXISTS registration_source VARCHAR(16) NOT NULL DEFAULT 'manual'
+  `);
+  await adminPool.query(`
+    ALTER TABLE instances ADD COLUMN IF NOT EXISTS first_registered_at TIMESTAMPTZ
+  `);
+  await adminPool.query(`
+    ALTER TABLE instances ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMPTZ
+  `);
+  await adminPool.query(`
+    ALTER TABLE instances ADD COLUMN IF NOT EXISTS approved_by UUID
+  `);
+  await adminPool.query(`
+    ALTER TABLE instances ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ
+  `);
+  await adminPool.query(`
+    CREATE INDEX IF NOT EXISTS idx_instances_awaiting_approval
+      ON instances (first_registered_at DESC) WHERE status = 'awaiting_approval'
   `);
 
   await adminPool.query(`

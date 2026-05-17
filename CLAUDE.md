@@ -48,6 +48,20 @@ You are helping maintain the DesignFoundry Superadmin application. This file pro
 All feature specs are in `SPECS/R1/`. Key specs for current work:
 - **R1-07 (Instance Registry):** Register + manage EA instances
 - **R1-14 (Platform Event Bus):** Pub/Sub subscriber + `platform_events` table
+- **R1-16 (Instance Self-Registration):** Instances register themselves at boot via `POST /api/instances/register` using `PLATFORM_REGISTRATION_TOKEN`; production/staging land in `awaiting_approval`, dev auto-activates. Heartbeats land at `POST /api/instances/heartbeat`. See spec for the full handshake.
+
+## Instance Self-Registration (R1-16)
+
+Self-registered instances appear in `/superadmin/instances` automatically:
+- `dev` → `status='active'` immediately
+- `staging` / `production` → `status='awaiting_approval'`; operator approves via the panel at the top of the list (calls `POST /api/superadmin/instances/:id/approve` or `/reject`).
+
+Env vars on superadmin:
+- `PLATFORM_REGISTRATION_TOKEN` (required) — shared bootstrap secret; rotate without affecting already-registered instances.
+- `PLATFORM_REGISTRATION_ENABLED=false` (optional) — block all new registrations.
+- `REGISTRATION_RATE_LIMIT` (optional, default 5/min/IP).
+
+The manual flow from R1-07/R1-15 still works for air-gapped on-prem (operator clicks **Add Instance** and copies the key).
 
 ## Event Bus
 

@@ -11,6 +11,7 @@ export type InstanceEnvironment = 'production' | 'staging' | 'dev';
 
 export type InstanceStatus =
   | 'pending'
+  | 'awaiting_approval'
   | 'active'
   | 'inactive'
   | 'deactivated';
@@ -30,6 +31,12 @@ export interface Instance {
   keyRotatedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  // R1-16: self-registration metadata. Null on legacy/manual rows.
+  registrationSource?: 'manual' | 'self_registered';
+  firstRegisteredAt?: string | null;
+  lastHeartbeatAt?: string | null;
+  approvedBy?: string | null;
+  approvedAt?: string | null;
 }
 
 export interface InstanceWithSecret extends Instance {
@@ -74,6 +81,11 @@ interface InstanceRow {
   deactivated_at: Date | null;
   created_at: Date;
   updated_at: Date;
+  registration_source?: 'manual' | 'self_registered';
+  first_registered_at?: Date | null;
+  last_heartbeat_at?: Date | null;
+  approved_by?: string | null;
+  approved_at?: Date | null;
 }
 
 function toInstance(row: InstanceRow): Instance {
@@ -90,6 +102,11 @@ function toInstance(row: InstanceRow): Instance {
     keyRotatedAt: row.key_rotated_at?.toISOString() ?? null,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
+    registrationSource: row.registration_source,
+    firstRegisteredAt: row.first_registered_at?.toISOString() ?? null,
+    lastHeartbeatAt: row.last_heartbeat_at?.toISOString() ?? null,
+    approvedBy: row.approved_by ?? null,
+    approvedAt: row.approved_at?.toISOString() ?? null,
   };
 }
 

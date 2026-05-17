@@ -64,18 +64,21 @@
 | R1-11 | Global Content Pack Registry | P1 | ⬜ Not Started | Global registry: install/add/remove/update content packs |
 | R1-12 | AI Models Registry (Admin) | P1 | ⬜ Not Started | Subscription AI models management; BYOAI separate |
 
-### Group 4: Instance Provisioning (R1-13)
+### Group 4: Instance Provisioning & Trust (R1-13, R1-14, R1-15, R1-16)
 
 | ID | Title | Priority | Status | Notes |
 |----|-------|----------|--------|-------|
 | R1-13 | Instance Provisioning & Onboarding | P1 | ⬜ Not Started | Onboard new on-prem/cloud managed instances from admin console |
+| R1-14 | Platform Event Bus | P1 | ⬜ Not Started | Pub/Sub-backed cross-app event ingestion |
+| R1-15 | Instance Authentication | P0 | ⬜ Not Started | Per-instance API-key trust between superadmin and EA instances |
+| R1-16 | Instance Self-Registration | P1 | ⬜ Not Started | Instance-initiated registration with retry; replaces manual key-paste dance |
 
 ---
 
 ## Spec Status Snapshot
 
 - **R0-00**: 🟡 Partial — scaffold exists; backend and real pages not yet built
-- **R1-01 through R1-13**: ⬜ Not Started — all spec'd, not yet implemented
+- **R1-01 through R1-16**: ⬜ Not Started — all spec'd, not yet implemented
 
 ---
 
@@ -88,5 +91,5 @@ SPECS/
 ├── archive/           ← obsolete/superseded specs
 │   └── P01-00-super-admin-console-original.md  ← original S070 (migrated from rezonator/S070)
 ├── R0/                ← 1 retrospective spec (what's already built)
-└── R1/                ← 12 MVP specs (R1-01 through R1-13)
+└── R1/                ← 16 MVP specs (R1-01 through R1-16)
 ```

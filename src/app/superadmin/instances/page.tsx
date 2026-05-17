@@ -13,10 +13,12 @@ import {
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import {
+  approveInstance,
   commitInstanceKeyRotation,
   createInstance,
   deactivateInstance,
   listInstances,
+  rejectInstance,
   rotateInstanceKey,
   testInstance,
   type Instance,
@@ -34,6 +36,7 @@ const ENV_BADGE: Record<InstanceEnvironment, string> = {
 
 const STATUS_BADGE: Record<string, string> = {
   pending: 'bg-amber-100 text-amber-700',
+  awaiting_approval: 'bg-amber-100 text-amber-700',
   active: 'bg-emerald-100 text-emerald-700',
   inactive: 'bg-slate-100 text-slate-600',
   deactivated: 'bg-red-100 text-red-700',
@@ -151,6 +154,34 @@ export default function InstancesPage() {
     }
   }
 
+  async function handleApprove(id: string) {
+    setActionId(id);
+    try {
+      await approveInstance(id);
+      await load();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Failed to approve');
+    } finally {
+      setActionId(null);
+    }
+  }
+
+  async function handleReject(id: string) {
+    if (!confirm('Reject this instance? Its key will be revoked and the row deactivated.')) return;
+    setActionId(id);
+    try {
+      await rejectInstance(id);
+      await load();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Failed to reject');
+    } finally {
+      setActionId(null);
+    }
+  }
+
+  const awaiting = instances.filter((i) => i.status === 'awaiting_approval');
+  const active = instances.filter((i) => i.status !== 'awaiting_approval');
+
   return (
     <div className="p-8">
       <div className="flex items-center justify-between mb-6">
@@ -171,6 +202,67 @@ export default function InstancesPage() {
         <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm mb-4">
           <AlertTriangle className="w-4 h-4 shrink-0" />
           {error}
+        </div>
+      )}
+
+      {awaiting.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6">
+          <div className="flex items-center gap-2 mb-3">
+            <AlertTriangle className="w-4 h-4 text-amber-600" />
+            <h2 className="text-sm font-semibold text-amber-900">
+              Awaiting Approval ({awaiting.length})
+            </h2>
+          </div>
+          <ul className="space-y-2">
+            {awaiting.map((inst) => (
+              <li
+                key={inst.id}
+                className="bg-white border border-amber-200 rounded-lg p-3 flex items-center justify-between gap-4"
+              >
+                <div className="min-w-0">
+                  <div className="font-medium text-slate-900 truncate">
+                    {inst.name}
+                    {inst.instanceVersion && (
+                      <span className="ml-2 text-xs text-slate-400 font-normal">
+                        v{inst.instanceVersion}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-xs text-slate-500 font-mono truncate">
+                    {inst.url}
+                  </div>
+                  <div className="text-xs text-slate-400 mt-1">
+                    First seen{' '}
+                    {inst.firstRegisteredAt
+                      ? new Date(inst.firstRegisteredAt).toLocaleString()
+                      : '—'}
+                    {inst.lastHeartbeatAt && (
+                      <>
+                        {' · '}Last heartbeat{' '}
+                        {new Date(inst.lastHeartbeatAt).toLocaleString()}
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={() => handleApprove(inst.id)}
+                    disabled={actionId === inst.id}
+                    className="px-3 py-1.5 bg-emerald-600 text-white rounded-md text-xs hover:bg-emerald-700 disabled:opacity-50"
+                  >
+                    Approve
+                  </button>
+                  <button
+                    onClick={() => handleReject(inst.id)}
+                    disabled={actionId === inst.id}
+                    className="px-3 py-1.5 bg-red-600 text-white rounded-md text-xs hover:bg-red-700 disabled:opacity-50"
+                  >
+                    Reject
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
@@ -198,15 +290,16 @@ export default function InstancesPage() {
                   ))}
                 </tr>
               ))}
-            {!loading && instances.length === 0 && (
+            {!loading && active.length === 0 && (
               <tr>
                 <td colSpan={7} className="px-4 py-8 text-center text-slate-400">
-                  No instances registered. Click <strong>Add Instance</strong> to register one.
+                  No instances registered. Click <strong>Add Instance</strong> to register one,
+                  or have an instance self-register.
                 </td>
               </tr>
             )}
             {!loading &&
-              instances.map((inst) => {
+              active.map((inst) => {
                 const health = inst.lastHealthStatus ?? 'unknown';
                 const tr = testResult[inst.id];
                 return (

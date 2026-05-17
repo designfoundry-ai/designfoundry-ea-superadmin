@@ -576,7 +576,14 @@ async function instancesRequest<T>(path: string, options: RequestInit = {}): Pro
 
 export type InstanceEnvironment = 'production' | 'staging' | 'dev';
 
-export type InstanceStatus = 'pending' | 'active' | 'inactive' | 'deactivated';
+export type InstanceStatus =
+  | 'pending'
+  | 'awaiting_approval'
+  | 'active'
+  | 'inactive'
+  | 'deactivated';
+
+export type RegistrationSource = 'manual' | 'self_registered';
 
 export interface Instance {
   id: string;
@@ -591,6 +598,12 @@ export interface Instance {
   keyRotatedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  // R1-16 — present on self-registered rows; null on manual rows.
+  registrationSource?: RegistrationSource;
+  firstRegisteredAt?: string | null;
+  lastHeartbeatAt?: string | null;
+  approvedBy?: string | null;
+  approvedAt?: string | null;
 }
 
 export interface InstanceCreated extends Instance {
@@ -662,6 +675,17 @@ export async function commitInstanceKeyRotation(id: string): Promise<Instance> {
 
 export async function deactivateInstance(id: string): Promise<void> {
   return instancesRequest(`/${id}`, { method: 'DELETE' });
+}
+
+// R1-16: operator approves a self-registered awaiting_approval instance.
+export async function approveInstance(id: string): Promise<Instance> {
+  return instancesRequest(`/${id}/approve`, { method: 'POST' });
+}
+
+// R1-16: operator rejects a self-registered awaiting_approval instance.
+// Hard-revokes the key and deactivates the row.
+export async function rejectInstance(id: string): Promise<Instance> {
+  return instancesRequest(`/${id}/reject`, { method: 'POST' });
 }
 
 // ─── Admin Audit Log ──────────────────────────────────────────────────
