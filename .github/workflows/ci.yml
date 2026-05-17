@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - main
+      - develop
   pull_request:
     branches:
       - main
+      - develop
 
 env:
   # Opt in to Node.js 24 for GitHub JavaScript actions. GitHub is migrating
