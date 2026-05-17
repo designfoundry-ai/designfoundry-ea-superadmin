@@ -1,0 +1,85 @@
+name: Deploy Staging
+
+on:
+  push:
+    branches:
+      - develop
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Optional image tag override (defaults to current SHA)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: true
+
+env:
+  # Opt in to Node.js 24 for GitHub JavaScript actions. GitHub is migrating
+  # from Node 20 → Node 24 on 2026-09-16; setting this flag adopts the new
+  # runtime early and silences the deprecation warning that already fires
+  # on every Node 20 action invocation.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  deploy:
+    name: Deploy to staging
+    runs-on: ubuntu-latest
+    # Bind to the staging environment so vars.* + secrets.* resolve from
+    # the staging Environment's variable/secret map (set up by
+    # deploy/setup-github-environments.sh).
+    environment:
+      name: staging
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # NEXT_PUBLIC_API_URL is baked into the frontend bundle at build time.
+      # Fail the workflow up front if it's missing rather than handing an
+      # empty value to the composite action and silently shipping a bundle
+      # pointed at nowhere.
+      - name: Validate required vars
+        shell: bash
+        run: |
+          : "${API_URL:?ERROR: NEXT_PUBLIC_API_URL repository variable not set — configure it at Settings > Environments > staging}"
+        env:
+          API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+
+      - name: Resolve image tag
+        id: meta
+        shell: bash
+        run: |
+          TAG="${{ inputs.image_tag || github.sha }}"
+          echo "image_tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy via composite action
+        id: deploy
+        uses: ./.github/actions/deploy-gcp
+        with:
+          environment_name: staging
+          image_tag: ${{ steps.meta.outputs.image_tag }}
+          gcp_project_id: ${{ vars.GCP_PROJECT_ID }}
+          gcp_region: ${{ vars.GCP_REGION }}
+          gcp_workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          gcp_deployer_service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+          artifact_registry_repo: ${{ vars.ARTIFACT_REGISTRY_REPO }}
+          cloud_run_service: ${{ vars.CLOUD_RUN_SERVICE }}
+          service_account: ${{ vars.SUPERADMIN_SERVICE_ACCOUNT }}
+          next_public_api_url: ${{ vars.NEXT_PUBLIC_API_URL }}
+          jwt_secret_name: ${{ vars.JWT_SECRET_NAME || 'superadmin-jwt-secret' }}
+
+      - name: Deployment summary
+        shell: bash
+        run: |
+          {
+            echo "## Super Admin — Staging Deploy"
+            echo "- Branch: ${{ github.ref_name }}"
+            echo "- Image tag: ${{ steps.meta.outputs.image_tag }}"
+            echo "- Service URL: ${{ steps.deploy.outputs.service_url }}"
+            echo "- API URL: ${{ vars.NEXT_PUBLIC_API_URL }}"
+          } >> "$GITHUB_STEP_SUMMARY"
