@@ -1,15 +1,32 @@
 // Smoke coverage for tenant lifecycle endpoints — suspend + activate.
-// These are the two transitions that change a tenant's billing/access
-// state, so a regression here either fails to revoke access on suspend
-// or fails to restore it on activate. Plus the audit hook must fire.
+// Post-refactor: superadmin no longer mutates a local tenants table.
+// It looks up the owning instance via tenants_cache and proxies the
+// call to {instance}/api/v1/platform/tenants/:id/{suspend|activate}.
+// Tests mock the proxy layer.
 
 import { NextRequest } from 'next/server';
 
-const dbQuery = jest.fn();
-jest.mock('@/lib/db', () => ({
+const findTenantByIdAnywhere = jest.fn();
+const getCachedTenant = jest.fn();
+const upsertTenant = jest.fn().mockResolvedValue(undefined);
+jest.mock('@/lib/services/tenants-cache', () => ({
   __esModule: true,
-  default: { query: (...args: unknown[]) => dbQuery(...args) },
+  findTenantByIdAnywhere: (...args: unknown[]) => findTenantByIdAnywhere(...args),
+  getCachedTenant: (...args: unknown[]) => getCachedTenant(...args),
+  upsertTenant: (...args: unknown[]) => upsertTenant(...args),
 }));
+
+const suspendTenantOnInstance = jest.fn();
+const activateTenantOnInstance = jest.fn();
+jest.mock('@/lib/services/instance-api-client', () => {
+  const actual = jest.requireActual('@/lib/services/instance-api-client');
+  return {
+    __esModule: true,
+    ...actual,
+    suspendTenantOnInstance: (...args: unknown[]) => suspendTenantOnInstance(...args),
+    activateTenantOnInstance: (...args: unknown[]) => activateTenantOnInstance(...args),
+  };
+});
 
 const requireAdmin = jest.fn();
 const getClientIp = jest.fn().mockReturnValue('127.0.0.1');
@@ -34,6 +51,34 @@ import { POST as activate } from '@/app/api/superadmin/tenants/[id]/activate/rou
 import { AuthError } from '@/lib/auth';
 
 const adminUser = { id: 'admin-1', email: 'op@designfoundry.ai' };
+const cachedRow = {
+  instanceId: 'inst-1',
+  instanceName: 'acme-prod',
+  instanceEnvironment: 'production',
+  tenantId: 't-1',
+  name: 'Acme',
+  slug: 'acme',
+  status: 'active',
+  plan: 'professional',
+  userCount: 5,
+  objectCount: 100,
+  createdAtSrc: '2026-01-01T00:00:00Z',
+  firstSeenAt: '2026-01-01T00:00:00Z',
+  lastSeenAt: '2026-05-17T00:00:00Z',
+  lastSyncedAt: '2026-05-17T00:00:00Z',
+  lastEventAt: null,
+  deletedAt: null,
+};
+const liveTenantPayload = {
+  id: 't-1',
+  name: 'Acme',
+  slug: 'acme',
+  status: 'suspended',
+  userCount: 5,
+  objectCount: 100,
+  createdAt: '2026-01-01T00:00:00Z',
+  users: [],
+};
 
 function req(): NextRequest {
   return new NextRequest('http://localhost/api/superadmin/tenants/t-1/x', {
@@ -46,42 +91,45 @@ function ctx(id: string) {
 
 beforeEach(() => {
   requireAdmin.mockReturnValue(adminUser);
-  dbQuery.mockReset();
+  findTenantByIdAnywhere.mockReset();
+  getCachedTenant.mockReset();
+  upsertTenant.mockClear();
+  suspendTenantOnInstance.mockReset();
+  activateTenantOnInstance.mockReset();
   logAudit.mockClear();
 });
 
 describe('POST /api/superadmin/tenants/[id]/suspend', () => {
   it('returns 401 when no admin is authenticated', async () => {
-    requireAdmin.mockImplementationOnce(() => {
-      throw new AuthError('Unauthorized');
-    });
-
+    requireAdmin.mockImplementationOnce(() => { throw new AuthError('Unauthorized'); });
     const res = await suspend(req(), ctx('t-1'));
     expect(res.status).toBe(401);
-    expect(dbQuery).not.toHaveBeenCalled();
+    expect(findTenantByIdAnywhere).not.toHaveBeenCalled();
   });
 
-  it('returns 404 when the tenant does not exist (no UPDATE returning)', async () => {
-    dbQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-
+  it('returns 404 when the tenant is not in the cache (sync needed)', async () => {
+    findTenantByIdAnywhere.mockResolvedValueOnce([]);
     const res = await suspend(req(), ctx('t-missing'));
     expect(res.status).toBe(404);
+    expect(suspendTenantOnInstance).not.toHaveBeenCalled();
     expect(logAudit).not.toHaveBeenCalled();
   });
 
-  it('returns 200, UPDATEs the row, and writes a TENANT_SUSPENDED audit on success', async () => {
-    dbQuery.mockResolvedValueOnce({ rows: [{ name: 'Acme' }], rowCount: 1 });
+  it('proxies to the owning instance and writes TENANT_SUSPENDED audit on success', async () => {
+    findTenantByIdAnywhere.mockResolvedValueOnce([cachedRow]);
+    suspendTenantOnInstance.mockResolvedValueOnce({ ...liveTenantPayload, status: 'suspended' });
 
     const res = await suspend(req(), ctx('t-1'));
     expect(res.status).toBe(200);
 
-    // SQL pins the suspended state + deactivation flag for the tenant.
-    const [sql, params] = dbQuery.mock.calls[0];
-    expect(String(sql)).toMatch(/UPDATE tenants SET status = 'suspended'/);
-    expect(String(sql)).toMatch(/is_active\s*=\s*false/);
-    expect(params).toEqual(['t-1']);
+    expect(suspendTenantOnInstance).toHaveBeenCalledWith('inst-1', 't-1');
+    expect(upsertTenant).toHaveBeenCalledWith(expect.objectContaining({
+      instanceId: 'inst-1',
+      tenantId: 't-1',
+      status: 'suspended',
+      source: 'event',
+    }));
 
-    // Audit hook fired with the tenant name from the RETURNING clause.
     expect(logAudit).toHaveBeenCalledTimes(1);
     const [actorId, actorEmail, action, target, targetId, details] = logAudit.mock.calls[0];
     expect(actorId).toBe(adminUser.id);
@@ -89,41 +137,38 @@ describe('POST /api/superadmin/tenants/[id]/suspend', () => {
     expect(action).toBe('TENANT_SUSPENDED');
     expect(target).toBe('tenant');
     expect(targetId).toBe('t-1');
-    expect(details).toEqual({ name: 'Acme' });
+    expect(details).toMatchObject({ name: 'Acme', instanceId: 'inst-1' });
   });
 });
 
 describe('POST /api/superadmin/tenants/[id]/activate', () => {
   it('returns 401 when no admin is authenticated', async () => {
-    requireAdmin.mockImplementationOnce(() => {
-      throw new AuthError('Unauthorized');
-    });
-
+    requireAdmin.mockImplementationOnce(() => { throw new AuthError('Unauthorized'); });
     const res = await activate(req(), ctx('t-1'));
     expect(res.status).toBe(401);
-    expect(dbQuery).not.toHaveBeenCalled();
+    expect(findTenantByIdAnywhere).not.toHaveBeenCalled();
   });
 
-  it('returns 404 when the tenant does not exist', async () => {
-    dbQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-
+  it('returns 404 when the tenant is not in the cache', async () => {
+    findTenantByIdAnywhere.mockResolvedValueOnce([]);
     const res = await activate(req(), ctx('t-missing'));
     expect(res.status).toBe(404);
+    expect(activateTenantOnInstance).not.toHaveBeenCalled();
     expect(logAudit).not.toHaveBeenCalled();
   });
 
-  it('returns 200, restores the row, and writes a TENANT_ACTIVATED audit on success', async () => {
-    dbQuery.mockResolvedValueOnce({ rows: [{ name: 'Acme' }], rowCount: 1 });
+  it('proxies to the owning instance and writes TENANT_ACTIVATED audit on success', async () => {
+    findTenantByIdAnywhere.mockResolvedValueOnce([cachedRow]);
+    activateTenantOnInstance.mockResolvedValueOnce({ ...liveTenantPayload, status: 'active' });
 
     const res = await activate(req(), ctx('t-1'));
     expect(res.status).toBe(200);
 
-    const [sql, params] = dbQuery.mock.calls[0];
-    expect(String(sql)).toMatch(/UPDATE tenants SET status = 'active'/);
-    expect(String(sql)).toMatch(/is_active\s*=\s*true/);
-    expect(params).toEqual(['t-1']);
-
-    expect(logAudit).toHaveBeenCalledTimes(1);
+    expect(activateTenantOnInstance).toHaveBeenCalledWith('inst-1', 't-1');
+    expect(upsertTenant).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'active',
+      source: 'event',
+    }));
     expect(logAudit.mock.calls[0][2]).toBe('TENANT_ACTIVATED');
   });
 });

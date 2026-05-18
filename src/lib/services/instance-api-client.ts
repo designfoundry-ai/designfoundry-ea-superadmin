@@ -84,6 +84,8 @@ interface CallOptions {
   pending?: boolean;
   timeoutMs?: number;
   query?: Record<string, string | number | undefined>;
+  method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
+  body?: unknown;
 }
 
 async function call<T>(
@@ -107,6 +109,7 @@ async function call<T>(
     );
   }
 
+  const method = opts.method ?? 'GET';
   const url = buildUrl(instance.url, path, opts.query);
   const controller = new AbortController();
   const timer = setTimeout(
@@ -114,15 +117,23 @@ async function call<T>(
     opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
   );
 
+  const headers: Record<string, string> = {
+    [PLATFORM_KEY_HEADER]: key,
+    Accept: 'application/json',
+  };
+  let bodyPayload: string | undefined;
+  if (opts.body !== undefined && method !== 'GET') {
+    headers['Content-Type'] = 'application/json';
+    bodyPayload = JSON.stringify(opts.body);
+  }
+
   const start = Date.now();
   let response: Response;
   try {
     response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        [PLATFORM_KEY_HEADER]: key,
-        Accept: 'application/json',
-      },
+      method,
+      headers,
+      body: bodyPayload,
       signal: controller.signal,
       cache: 'no-store',
     });
@@ -145,17 +156,28 @@ async function call<T>(
   }
   if (response.status === 404) {
     throw new InstanceApiError(
-      'platform endpoint not available on this instance',
+      'tenant or platform endpoint not found on this instance',
       'NOT_FOUND',
       404,
     );
   }
   if (!response.ok) {
+    let serverMsg: string | undefined;
+    try {
+      const errBody = await response.json();
+      serverMsg = typeof errBody?.message === 'string' ? errBody.message : undefined;
+    } catch {
+      /* non-JSON body */
+    }
     throw new InstanceApiError(
-      `instance returned ${response.status}`,
+      serverMsg ?? `instance returned ${response.status}`,
       'BAD_RESPONSE',
       response.status,
     );
+  }
+
+  if (response.status === 204) {
+    return { data: undefined as T, latencyMs };
   }
 
   let body: unknown;
@@ -231,5 +253,61 @@ export async function getUsers(
 
 export async function getSystem(instanceId: string): Promise<PlatformSystem> {
   const { data } = await call<PlatformSystem>(instanceId, '/platform/system');
+  return data;
+}
+
+// ─── Mutations (proxy targets for superadmin lifecycle routes) ────────
+
+export interface UpdateTenantInput {
+  name?: string;
+  plan?: string;
+  status?: string;
+}
+
+export async function suspendTenantOnInstance(
+  instanceId: string,
+  tenantId: string,
+): Promise<PlatformTenantDetail> {
+  const { data } = await call<PlatformTenantDetail>(
+    instanceId,
+    `/platform/tenants/${tenantId}/suspend`,
+    { method: 'POST' },
+  );
+  return data;
+}
+
+export async function activateTenantOnInstance(
+  instanceId: string,
+  tenantId: string,
+): Promise<PlatformTenantDetail> {
+  const { data } = await call<PlatformTenantDetail>(
+    instanceId,
+    `/platform/tenants/${tenantId}/activate`,
+    { method: 'POST' },
+  );
+  return data;
+}
+
+export async function updateTenantOnInstance(
+  instanceId: string,
+  tenantId: string,
+  input: UpdateTenantInput,
+): Promise<PlatformTenantDetail> {
+  const { data } = await call<PlatformTenantDetail>(
+    instanceId,
+    `/platform/tenants/${tenantId}`,
+    { method: 'PATCH', body: input },
+  );
+  return data;
+}
+
+export async function getUsersForTenant(
+  instanceId: string,
+  tenantId: string,
+  query: { page?: number; limit?: number } = {},
+): Promise<PlatformUserList> {
+  const { data } = await call<PlatformUserList>(instanceId, '/platform/users', {
+    query: { ...query, tenantId },
+  });
   return data;
 }

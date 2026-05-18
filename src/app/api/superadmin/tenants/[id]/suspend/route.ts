@@ -1,27 +1,92 @@
+// Proxy: POST /api/superadmin/tenants/:id/suspend
+//   → POST {instance}/api/v1/platform/tenants/:id/suspend
+//
+// Resolves the owning instance via tenants_cache (?instance=... overrides).
+// On success: updates the cache row eagerly so the UI reflects the change
+// without waiting for the next tenant.suspended event to round-trip
+// through Pub/Sub.
+
 import { NextRequest, NextResponse } from 'next/server';
-import pool from '@/lib/db';
 import { requireAdmin, AuthError, getClientIp } from '@/lib/auth';
 import { logAudit } from '@/lib/audit';
+import {
+  InstanceApiError,
+  suspendTenantOnInstance,
+} from '@/lib/services/instance-api-client';
+import {
+  findTenantByIdAnywhere,
+  getCachedTenant,
+  upsertTenant,
+} from '@/lib/services/tenants-cache';
 
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
   try {
     const admin = requireAdmin(req);
     const { id } = await params;
+    const url = new URL(req.url);
+    const instanceHint = url.searchParams.get('instance');
 
-    const { rows } = await pool.query<{ name: string }>(
-      `UPDATE tenants SET status = 'suspended', is_active = false WHERE id = $1
-       RETURNING name`,
-      [id],
-    );
+    let cached;
+    if (instanceHint) {
+      cached = await getCachedTenant(instanceHint, id);
+    } else {
+      const matches = await findTenantByIdAnywhere(id);
+      cached = matches.find((m) => m.deletedAt === null) ?? matches[0];
+    }
 
-    if (!rows[0]) return NextResponse.json({ message: 'Tenant not found' }, { status: 404 });
+    if (!cached) {
+      return NextResponse.json(
+        { message: 'Tenant not found in any instance cache — run Sync now first.' },
+        { status: 404 },
+      );
+    }
 
-    await logAudit(admin.id, admin.email, 'TENANT_SUSPENDED', 'tenant', id,
-      { name: rows[0].name }, getClientIp(req));
+    try {
+      const live = await suspendTenantOnInstance(cached.instanceId, cached.tenantId);
 
-    return NextResponse.json({ success: true });
+      // Eager cache update — keeps the UI consistent before the
+      // tenant.suspended event lands. Event handler is idempotent.
+      await upsertTenant({
+        instanceId: cached.instanceId,
+        tenantId: cached.tenantId,
+        name: live.name,
+        slug: live.slug,
+        status: 'suspended',
+        plan: cached.plan,
+        userCount: live.userCount,
+        objectCount: live.objectCount,
+        createdAtSrc: live.createdAt ?? cached.createdAtSrc,
+        source: 'event',
+      });
+
+      await logAudit(
+        admin.id,
+        admin.email,
+        'TENANT_SUSPENDED',
+        'tenant',
+        id,
+        { name: live.name, instanceId: cached.instanceId },
+        getClientIp(req),
+      );
+
+      return NextResponse.json({ success: true, status: 'suspended' });
+    } catch (err) {
+      if (err instanceof InstanceApiError) {
+        const status = err.status ?? (err.code === 'NOT_FOUND' ? 404 : 502);
+        return NextResponse.json(
+          { message: err.message, code: err.code, instanceId: cached.instanceId },
+          { status },
+        );
+      }
+      throw err;
+    }
   } catch (err) {
-    if (err instanceof AuthError) return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
+    if (err instanceof AuthError) {
+      return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
+    }
     console.error('[tenant suspend]', err);
     return NextResponse.json({ message: 'Internal server error' }, { status: 500 });
   }

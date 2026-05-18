@@ -6,8 +6,12 @@ import { useSearchParams } from 'next/navigation';
 import {
   ArrowLeft, AlertTriangle, Building2, Users, LayoutGrid,
   BarChart3, Trash2, Server, CheckCircle2, Clock, RefreshCw, Loader2,
+  Pause, Play,
 } from 'lucide-react';
-import { getTenant, type TenantDetail } from '@/lib/api';
+import {
+  getTenant, suspendTenant, activateTenant,
+  type TenantDetail,
+} from '@/lib/api';
 import { clsx } from 'clsx';
 
 type Tab = 'overview' | 'users' | 'settings';
@@ -65,6 +69,33 @@ export default function TenantDetailPage({ params }: { params: Promise<{ id: str
   }, [id, instanceHint]);
 
   const users = tenant?.users ?? [];
+  const [actionLoading, setActionLoading] = useState(false);
+
+  async function handleSuspend() {
+    if (!tenant) return;
+    setActionLoading(true);
+    try {
+      await suspendTenant(id);
+      await reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Suspend failed');
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  async function handleActivate() {
+    if (!tenant) return;
+    setActionLoading(true);
+    try {
+      await activateTenant(id);
+      await reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Activate failed');
+    } finally {
+      setActionLoading(false);
+    }
+  }
 
   if (loading) {
     return (
@@ -167,9 +198,27 @@ export default function TenantDetailPage({ params }: { params: Promise<{ id: str
             <span className="px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded-full text-xs font-medium capitalize">
               {tenant.plan}
             </span>
-            <span className="text-xs text-slate-400 italic">
-              Lifecycle actions: edit on the instance
-            </span>
+            {tenant.status !== 'suspended' ? (
+              <button
+                onClick={handleSuspend}
+                disabled={actionLoading}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-100 text-amber-700
+                           rounded-lg text-sm font-medium hover:bg-amber-200 disabled:opacity-50"
+              >
+                {actionLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Pause className="w-3.5 h-3.5" />}
+                Suspend
+              </button>
+            ) : (
+              <button
+                onClick={handleActivate}
+                disabled={actionLoading}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-100 text-emerald-700
+                           rounded-lg text-sm font-medium hover:bg-emerald-200 disabled:opacity-50"
+              >
+                {actionLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+                Activate
+              </button>
+            )}
           </div>
         </div>
       </div>

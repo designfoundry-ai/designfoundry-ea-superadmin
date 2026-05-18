@@ -14,15 +14,18 @@
 // the UI fails loudly instead of silently corrupting state.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAdmin, AuthError } from '@/lib/auth';
+import { requireAdmin, AuthError, getClientIp } from '@/lib/auth';
+import { logAudit } from '@/lib/audit';
 import {
   InstanceApiError,
   getTenantDetail,
+  updateTenantOnInstance,
 } from '@/lib/services/instance-api-client';
 import {
   type CachedTenant,
   findTenantByIdAnywhere,
   getCachedTenant,
+  upsertTenant,
 } from '@/lib/services/tenants-cache';
 
 export async function GET(
@@ -91,26 +94,103 @@ export async function GET(
   }
 }
 
-export function PATCH() {
-  // TODO(multi-instance): proxy to {instance}/api/v1/platform/tenants/{id}
-  // via instance-api-client once it supports mutations. Until then this
-  // endpoint cannot safely apply tenant edits.
-  return NextResponse.json(
-    {
-      message:
-        'Tenant edits via superadmin are not yet wired through to the owning instance. Edit the tenant directly on the EA instance.',
-      code: 'NOT_IMPLEMENTED',
-    },
-    { status: 501 },
-  );
+// PATCH: proxy to {instance}/api/v1/platform/tenants/:id with the
+// instance's PlatformTenantsService accepting { name?, plan?, status? }.
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  try {
+    const admin = requireAdmin(req);
+    const { id } = await params;
+    const url = new URL(req.url);
+    const instanceHint = url.searchParams.get('instance');
+
+    const body = (await req.json().catch(() => ({}))) as {
+      name?: string;
+      plan?: string;
+      status?: string;
+    };
+
+    const patch = {
+      name: typeof body.name === 'string' ? body.name : undefined,
+      plan: typeof body.plan === 'string' ? body.plan : undefined,
+      status: typeof body.status === 'string' ? body.status : undefined,
+    };
+    if (!patch.name && !patch.plan && !patch.status) {
+      return NextResponse.json(
+        { message: 'No updatable fields provided' },
+        { status: 400 },
+      );
+    }
+
+    const cached = await resolveCachedRow(id, instanceHint);
+    if (!cached) {
+      return NextResponse.json(
+        { message: 'Tenant not found in any instance cache — run Sync now first.' },
+        { status: 404 },
+      );
+    }
+
+    try {
+      const live = await updateTenantOnInstance(
+        cached.instanceId,
+        cached.tenantId,
+        patch,
+      );
+
+      await upsertTenant({
+        instanceId: cached.instanceId,
+        tenantId: cached.tenantId,
+        name: live.name,
+        slug: live.slug,
+        status: live.status,
+        plan: patch.plan ?? cached.plan,
+        userCount: live.userCount,
+        objectCount: live.objectCount,
+        createdAtSrc: live.createdAt ?? cached.createdAtSrc,
+        source: 'event',
+      });
+
+      await logAudit(
+        admin.id,
+        admin.email,
+        'TENANT_UPDATED',
+        'tenant',
+        id,
+        { changes: patch, instanceId: cached.instanceId },
+        getClientIp(req),
+      );
+
+      return NextResponse.json(toApiShape({ ...cached, ...live }));
+    } catch (err) {
+      if (err instanceof InstanceApiError) {
+        const status = err.status ?? (err.code === 'NOT_FOUND' ? 404 : 502);
+        return NextResponse.json(
+          { message: err.message, code: err.code, instanceId: cached.instanceId },
+          { status },
+        );
+      }
+      throw err;
+    }
+  } catch (err) {
+    if (err instanceof AuthError) {
+      return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
+    }
+    console.error('[tenant PATCH]', err);
+    return NextResponse.json({ message: 'Internal server error' }, { status: 500 });
+  }
 }
 
 export function DELETE() {
-  // TODO(multi-instance): proxy to {instance}/api/v1/platform/tenants/{id}
+  // Hard delete intentionally NOT wired: rezonator's PlatformTenantsService
+  // doesn't expose a delete method (would need to drop the tenant schema +
+  // cascade users/objects/etc, which is dangerous from a remote API). Use
+  // suspend instead, then delete on the instance directly.
   return NextResponse.json(
     {
       message:
-        'Tenant deletion via superadmin is not yet wired through to the owning instance. Delete the tenant directly on the EA instance.',
+        'Hard delete is not supported via the platform API. Suspend the tenant here, then delete it on the EA instance directly.',
       code: 'NOT_IMPLEMENTED',
     },
     { status: 501 },
