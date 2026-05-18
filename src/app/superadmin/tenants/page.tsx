@@ -2,8 +2,27 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
-import { Building2, Search, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react';
-import { getTenants, suspendTenant, activateTenant, type Tenant, type TenantFilters } from '@/lib/api';
+import {
+  Building2,
+  Search,
+  AlertTriangle,
+  ChevronLeft,
+  ChevronRight,
+  Server,
+  X,
+  CheckCircle2,
+  XCircle,
+  Loader2,
+} from 'lucide-react';
+import {
+  getTenants,
+  suspendTenant,
+  activateTenant,
+  discoverInstanceTenants,
+  type Tenant,
+  type TenantFilters,
+  type DiscoverTenantsResponse,
+} from '@/lib/api';
 import { clsx } from 'clsx';
 
 const STATUS_BADGE: Record<string, string> = {
@@ -47,6 +66,27 @@ export default function TenantsPage() {
   const [filters, setFilters] = useState<TenantFilters>({ page: 1, limit: 25 });
   const [search, setSearch] = useState('');
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+
+  // "Discover from instances" — fan-out to every active instance.
+  const [discoverOpen, setDiscoverOpen] = useState(false);
+  const [discoverLoading, setDiscoverLoading] = useState(false);
+  const [discoverError, setDiscoverError] = useState<string | null>(null);
+  const [discoverData, setDiscoverData] = useState<DiscoverTenantsResponse | null>(null);
+
+  async function runDiscover() {
+    setDiscoverOpen(true);
+    setDiscoverLoading(true);
+    setDiscoverError(null);
+    setDiscoverData(null);
+    try {
+      const result = await discoverInstanceTenants();
+      setDiscoverData(result);
+    } catch (e) {
+      setDiscoverError(e instanceof Error ? e.message : 'Failed to discover tenants');
+    } finally {
+      setDiscoverLoading(false);
+    }
+  }
 
   const load = useCallback(async (f: TenantFilters) => {
     setLoading(true);
@@ -97,6 +137,21 @@ export default function TenantsPage() {
           <h1 className="text-2xl font-semibold text-slate-900">Tenants</h1>
           <span className="text-sm text-slate-500">({total.toLocaleString()} total)</span>
         </div>
+        <button
+          onClick={runDiscover}
+          disabled={discoverLoading}
+          className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-slate-700
+                     bg-white border border-slate-200 rounded-lg hover:bg-slate-50
+                     disabled:opacity-50 disabled:cursor-not-allowed"
+          title="Query every active instance for its tenant list and aggregate the results"
+        >
+          {discoverLoading ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <Server className="w-4 h-4" />
+          )}
+          Discover from instances
+        </button>
       </div>
 
       {/* Filters */}
@@ -252,6 +307,215 @@ export default function TenantsPage() {
           </div>
         </div>
       )}
+
+      {discoverOpen && (
+        <DiscoverInstancesModal
+          loading={discoverLoading}
+          error={discoverError}
+          data={discoverData}
+          onClose={() => setDiscoverOpen(false)}
+          onRetry={runDiscover}
+        />
+      )}
+    </div>
+  );
+}
+
+interface DiscoverInstancesModalProps {
+  loading: boolean;
+  error: string | null;
+  data: DiscoverTenantsResponse | null;
+  onClose: () => void;
+  onRetry: () => void;
+}
+
+function DiscoverInstancesModal({
+  loading,
+  error,
+  data,
+  onClose,
+  onRetry,
+}: DiscoverInstancesModalProps) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-xl shadow-xl w-full max-w-4xl max-h-[85vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+          <div className="flex items-center gap-3">
+            <Server className="w-5 h-5 text-slate-700" />
+            <h2 className="text-lg font-semibold text-slate-900">
+              Tenants across active instances
+            </h2>
+            {data && (
+              <span className="text-xs text-slate-500">
+                {data.totals.ok}/{data.totals.instances} instances replied · {data.totals.tenants} tenants found
+              </span>
+            )}
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded hover:bg-slate-100"
+            aria-label="Close"
+          >
+            <X className="w-4 h-4 text-slate-500" />
+          </button>
+        </div>
+
+        <div className="overflow-y-auto px-5 py-4 flex-1">
+          {loading && (
+            <div className="flex items-center gap-2 text-sm text-slate-500 py-8 justify-center">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Querying instances…
+            </div>
+          )}
+
+          {!loading && error && (
+            <div className="flex items-start gap-3 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p>{error}</p>
+                <button
+                  onClick={onRetry}
+                  className="mt-2 text-xs font-medium text-red-700 underline hover:text-red-800"
+                >
+                  Retry
+                </button>
+              </div>
+            </div>
+          )}
+
+          {!loading && !error && data && data.results.length === 0 && (
+            <p className="text-sm text-slate-500 py-6 text-center">
+              No active instances to query. Approve a self-registered instance first.
+            </p>
+          )}
+
+          {!loading && !error && data && data.results.length > 0 && (
+            <div className="space-y-3">
+              {data.results.map((r) => (
+                <details
+                  key={r.instanceId}
+                  className="rounded-lg border border-slate-200 bg-slate-50 open:bg-white"
+                >
+                  <summary className="cursor-pointer list-none px-4 py-3 flex items-center gap-3">
+                    {r.ok ? (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                    ) : (
+                      <XCircle className="w-4 h-4 text-red-600 shrink-0" />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-slate-900 truncate">
+                          {r.instanceName}
+                        </span>
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 uppercase">
+                          {r.environment}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-400 truncate">{r.instanceUrl}</p>
+                    </div>
+                    <div className="text-right text-xs text-slate-500 shrink-0">
+                      {r.ok ? (
+                        <>
+                          <span className="font-medium text-slate-700">
+                            {r.tenantCount ?? 0} tenants
+                          </span>
+                          {typeof r.latencyMs === 'number' && (
+                            <span className="block">{r.latencyMs} ms</span>
+                          )}
+                        </>
+                      ) : (
+                        <span className="text-red-600 font-medium">
+                          {r.error?.code ?? 'ERROR'}
+                        </span>
+                      )}
+                    </div>
+                  </summary>
+
+                  <div className="px-4 pb-3 text-sm">
+                    {r.ok && r.tenants && r.tenants.length > 0 && (
+                      <table className="w-full mt-1">
+                        <thead>
+                          <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                            <th className="py-1.5 pr-2 font-medium">Name</th>
+                            <th className="py-1.5 px-2 font-medium">Slug</th>
+                            <th className="py-1.5 px-2 font-medium">Status</th>
+                            <th className="py-1.5 px-2 font-medium text-right">Users</th>
+                            <th className="py-1.5 px-2 font-medium text-right">Objects</th>
+                            <th className="py-1.5 pl-2 font-medium">Created</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {r.tenants.map((t) => (
+                            <tr key={t.id}>
+                              <td className="py-1.5 pr-2 text-slate-800">{t.name}</td>
+                              <td className="py-1.5 px-2 text-slate-500">{t.slug}</td>
+                              <td className="py-1.5 px-2">
+                                <span className={clsx(
+                                  'px-1.5 py-0.5 rounded-full text-xs font-medium capitalize',
+                                  STATUS_BADGE[t.status] ?? 'bg-slate-100 text-slate-600',
+                                )}>
+                                  {t.status}
+                                </span>
+                              </td>
+                              <td className="py-1.5 px-2 text-right text-slate-700">
+                                {t.userCount.toLocaleString()}
+                              </td>
+                              <td className="py-1.5 px-2 text-right text-slate-700">
+                                {t.objectCount.toLocaleString()}
+                              </td>
+                              <td className="py-1.5 pl-2 text-slate-500">
+                                {new Date(t.createdAt).toLocaleDateString()}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                    {r.ok && (!r.tenants || r.tenants.length === 0) && (
+                      <p className="text-xs text-slate-500 py-2">
+                        Instance replied but reported no tenants.
+                      </p>
+                    )}
+                    {!r.ok && r.error && (
+                      <p className="text-xs text-red-600 py-2">
+                        {r.error.message}
+                        {typeof r.error.status === 'number' && ` (HTTP ${r.error.status})`}
+                      </p>
+                    )}
+                  </div>
+                </details>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="px-5 py-3 border-t border-slate-200 flex items-center justify-between">
+          <p className="text-xs text-slate-500">
+            {data?.scannedAt && `Scanned at ${new Date(data.scannedAt).toLocaleString()}`}
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onRetry}
+              disabled={loading}
+              className="px-3 py-1.5 text-sm font-medium text-slate-700 border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-50"
+            >
+              Re-scan
+            </button>
+            <button
+              onClick={onClose}
+              className="px-3 py-1.5 text-sm font-medium text-white bg-slate-700 rounded-lg hover:bg-slate-800"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

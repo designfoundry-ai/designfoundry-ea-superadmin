@@ -688,6 +688,41 @@ export async function rejectInstance(id: string): Promise<Instance> {
   return instancesRequest(`/${id}/reject`, { method: 'POST' });
 }
 
+// Fan-out: ask every active instance for its tenant list and aggregate
+// the responses. Drives the "Discover from instances" action on the
+// superadmin tenants page.
+export interface DiscoveredInstanceTenant {
+  id: string;
+  name: string;
+  slug: string;
+  status: string;
+  userCount: number;
+  objectCount: number;
+  createdAt: string;
+}
+
+export interface DiscoveredInstanceResult {
+  instanceId: string;
+  instanceName: string;
+  instanceUrl: string;
+  environment: InstanceEnvironment;
+  ok: boolean;
+  tenantCount?: number;
+  tenants?: DiscoveredInstanceTenant[];
+  latencyMs?: number;
+  error?: { code: string; message: string; status?: number };
+}
+
+export interface DiscoverTenantsResponse {
+  scannedAt: string;
+  totals: { instances: number; ok: number; failed: number; tenants: number };
+  results: DiscoveredInstanceResult[];
+}
+
+export async function discoverInstanceTenants(): Promise<DiscoverTenantsResponse> {
+  return instancesRequest('/tenants', { method: 'POST' });
+}
+
 // ─── Admin Audit Log ──────────────────────────────────────────────────
 
 export async function getAdminAuditLog(params?: AdminAuditFilters) {
