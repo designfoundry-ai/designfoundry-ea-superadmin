@@ -8,20 +8,20 @@ import {
   AlertTriangle,
   ChevronLeft,
   ChevronRight,
-  Server,
-  X,
-  CheckCircle2,
-  XCircle,
+  RefreshCw,
   Loader2,
+  Server,
+  CheckCircle2,
 } from 'lucide-react';
 import {
   getTenants,
-  suspendTenant,
-  activateTenant,
-  discoverInstanceTenants,
+  listInstances,
+  syncTenantsFromInstances,
   type Tenant,
   type TenantFilters,
-  type DiscoverTenantsResponse,
+  type TenantList,
+  type TenantsSyncResponse,
+  type Instance,
 } from '@/lib/api';
 import { clsx } from 'clsx';
 
@@ -31,6 +31,7 @@ const STATUS_BADGE: Record<string, string> = {
   suspended: 'bg-red-100 text-red-700',
   canceled:  'bg-slate-100 text-slate-600',
   cancelled: 'bg-slate-100 text-slate-600',
+  unknown:   'bg-slate-100 text-slate-500',
 };
 
 const PLAN_BADGE: Record<string, string> = {
@@ -38,6 +39,13 @@ const PLAN_BADGE: Record<string, string> = {
   team:         'bg-blue-100 text-blue-700',
   professional: 'bg-purple-100 text-purple-700',
   enterprise:   'bg-indigo-100 text-indigo-700',
+  unknown:      'bg-slate-50 text-slate-500',
+};
+
+const ENV_BADGE: Record<string, string> = {
+  production: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  staging:    'bg-blue-50 text-blue-700 border-blue-200',
+  dev:        'bg-slate-50 text-slate-600 border-slate-200',
 };
 
 function StatusBadge({ status }: { status: string }) {
@@ -58,35 +66,46 @@ function PlanBadge({ plan }: { plan: string }) {
   );
 }
 
+function InstanceTag({ name, environment }: { name: string; environment: string }) {
+  return (
+    <span className={clsx('inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs border',
+      ENV_BADGE[environment] ?? 'bg-slate-50 text-slate-600 border-slate-200')}>
+      <Server className="w-3 h-3" />
+      <span className="font-medium">{name}</span>
+      <span className="uppercase opacity-60">{environment}</span>
+    </span>
+  );
+}
+
+function relativeAgo(iso: string | null | undefined): string {
+  if (!iso) return 'never';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 0) return 'just now';
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min} min ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr} h ago`;
+  return `${Math.round(hr / 24)} d ago`;
+}
+
 export default function TenantsPage() {
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [total, setTotal] = useState(0);
+  const [cacheMeta, setCacheMeta] = useState<TenantList['cache'] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<TenantFilters>({ page: 1, limit: 25 });
   const [search, setSearch] = useState('');
-  const [actionLoading, setActionLoading] = useState<string | null>(null);
 
-  // "Discover from instances" — fan-out to every active instance.
-  const [discoverOpen, setDiscoverOpen] = useState(false);
-  const [discoverLoading, setDiscoverLoading] = useState(false);
-  const [discoverError, setDiscoverError] = useState<string | null>(null);
-  const [discoverData, setDiscoverData] = useState<DiscoverTenantsResponse | null>(null);
+  // Sync now — single-click full pull from every active instance.
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [syncResult, setSyncResult] = useState<TenantsSyncResponse | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
-  async function runDiscover() {
-    setDiscoverOpen(true);
-    setDiscoverLoading(true);
-    setDiscoverError(null);
-    setDiscoverData(null);
-    try {
-      const result = await discoverInstanceTenants();
-      setDiscoverData(result);
-    } catch (e) {
-      setDiscoverError(e instanceof Error ? e.message : 'Failed to discover tenants');
-    } finally {
-      setDiscoverLoading(false);
-    }
-  }
+  // For the instance filter dropdown.
+  const [instances, setInstances] = useState<Instance[]>([]);
 
   const load = useCallback(async (f: TenantFilters) => {
     setLoading(true);
@@ -95,6 +114,7 @@ export default function TenantsPage() {
       const result = await getTenants(f);
       setTenants(result.tenants);
       setTotal(result.total);
+      setCacheMeta(result.cache ?? null);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load tenants');
     } finally {
@@ -104,54 +124,86 @@ export default function TenantsPage() {
 
   useEffect(() => { load(filters); }, [load, filters]);
 
+  useEffect(() => {
+    listInstances()
+      .then(r => setInstances(r.instances))
+      .catch(() => setInstances([]));
+  }, []);
+
   function handleSearch(e: React.FormEvent) {
     e.preventDefault();
     setFilters(prev => ({ ...prev, page: 1, search }));
   }
 
-  async function handleSuspend(id: string) {
-    setActionLoading(id);
+  async function handleSync() {
+    setSyncLoading(true);
+    setSyncError(null);
     try {
-      await suspendTenant(id);
-      await load(filters);
-    } catch { /* toast error */ }
-    setActionLoading(null);
-  }
-
-  async function handleActivate(id: string) {
-    setActionLoading(id);
-    try {
-      await activateTenant(id);
-      await load(filters);
-    } catch { /* toast error */ }
-    setActionLoading(null);
+      const result = await syncTenantsFromInstances();
+      setSyncResult(result);
+      await load(filters); // refresh list with new cache contents
+    } catch (e) {
+      setSyncError(e instanceof Error ? e.message : 'Sync failed');
+    } finally {
+      setSyncLoading(false);
+    }
   }
 
   const totalPages = Math.ceil(total / (filters.limit ?? 25));
 
   return (
     <div className="p-8">
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-3">
           <Building2 className="w-6 h-6 text-slate-700" />
           <h1 className="text-2xl font-semibold text-slate-900">Tenants</h1>
           <span className="text-sm text-slate-500">({total.toLocaleString()} total)</span>
         </div>
         <button
-          onClick={runDiscover}
-          disabled={discoverLoading}
+          onClick={handleSync}
+          disabled={syncLoading}
           className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-slate-700
                      bg-white border border-slate-200 rounded-lg hover:bg-slate-50
                      disabled:opacity-50 disabled:cursor-not-allowed"
-          title="Query every active instance for its tenant list and aggregate the results"
+          title="Pull latest tenant data from every active instance and update the cache"
         >
-          {discoverLoading ? (
+          {syncLoading ? (
             <Loader2 className="w-4 h-4 animate-spin" />
           ) : (
-            <Server className="w-4 h-4" />
+            <RefreshCw className="w-4 h-4" />
           )}
-          Discover from instances
+          Sync now
         </button>
+      </div>
+
+      {/* Freshness + sync status line */}
+      <div className="flex items-center gap-3 mb-6 text-xs text-slate-500">
+        <span>
+          Cache: {cacheMeta?.liveRows ?? 0} live
+          {cacheMeta?.deletedRows ? ` · ${cacheMeta.deletedRows} tombstoned` : ''}
+          {' · last synced '}
+          {relativeAgo(cacheMeta?.newestSyncedAt ?? null)}
+          {cacheMeta?.newestEventAt && ` · last event ${relativeAgo(cacheMeta.newestEventAt)}`}
+        </span>
+        {syncResult && (
+          <span className="inline-flex items-center gap-1 text-emerald-700">
+            <CheckCircle2 className="w-3 h-3" />
+            Sync: {syncResult.totals.ok}/{syncResult.totals.instances} instances
+            {' · '}{syncResult.totals.tenantsUpserted} upserted
+            {syncResult.totals.tenantsTombstoned > 0
+              && ` · ${syncResult.totals.tenantsTombstoned} tombstoned`}
+            {syncResult.totals.skipped > 0 && ` · ${syncResult.totals.skipped} skipped`}
+            {syncResult.totals.failed > 0 && (
+              <span className="text-red-600">{` · ${syncResult.totals.failed} failed`}</span>
+            )}
+          </span>
+        )}
+        {syncError && (
+          <span className="inline-flex items-center gap-1 text-red-600">
+            <AlertTriangle className="w-3 h-3" />
+            {syncError}
+          </span>
+        )}
       </div>
 
       {/* Filters */}
@@ -173,6 +225,17 @@ export default function TenantsPage() {
             Search
           </button>
         </form>
+
+        <select
+          value={filters.instance ?? ''}
+          onChange={e => setFilters(prev => ({ ...prev, page: 1, instance: e.target.value || undefined }))}
+          className="px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+        >
+          <option value="">All instances</option>
+          {instances.map(i => (
+            <option key={i.id} value={i.id}>{i.name} ({i.environment})</option>
+          ))}
+        </select>
 
         <select
           value={filters.status ?? ''}
@@ -211,18 +274,19 @@ export default function TenantsPage() {
           <thead className="bg-slate-50 border-b border-slate-200">
             <tr>
               <th className="text-left px-4 py-3 font-medium text-slate-600">Tenant</th>
+              <th className="text-left px-4 py-3 font-medium text-slate-600">Instance</th>
               <th className="text-left px-4 py-3 font-medium text-slate-600">Plan</th>
               <th className="text-left px-4 py-3 font-medium text-slate-600">Status</th>
               <th className="text-right px-4 py-3 font-medium text-slate-600">Users</th>
               <th className="text-right px-4 py-3 font-medium text-slate-600">Objects</th>
-              <th className="text-left px-4 py-3 font-medium text-slate-600">Created</th>
+              <th className="text-left px-4 py-3 font-medium text-slate-600">Last seen</th>
               <th className="text-right px-4 py-3 font-medium text-slate-600">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {loading && [...Array(5)].map((_, i) => (
               <tr key={i}>
-                {[...Array(7)].map((_, j) => (
+                {[...Array(8)].map((_, j) => (
                   <td key={j} className="px-4 py-3">
                     <div className="h-4 bg-slate-100 rounded animate-pulse" />
                   </td>
@@ -230,50 +294,51 @@ export default function TenantsPage() {
               </tr>
             ))}
             {!loading && tenants.map(t => (
-              <tr key={t.id} className="hover:bg-slate-50">
+              <tr key={`${t.instanceId}:${t.id}`} className="hover:bg-slate-50">
                 <td className="px-4 py-3">
                   <div>
-                    <Link href={`/superadmin/tenants/${t.id}`}
+                    <Link href={`/superadmin/tenants/${t.id}?instance=${t.instanceId}`}
                       className="font-medium text-slate-900 hover:text-indigo-600">{t.name}</Link>
                     <p className="text-xs text-slate-400">{t.slug}</p>
                   </div>
+                </td>
+                <td className="px-4 py-3">
+                  <InstanceTag name={t.instanceName} environment={t.instanceEnvironment} />
                 </td>
                 <td className="px-4 py-3"><PlanBadge plan={t.plan} /></td>
                 <td className="px-4 py-3"><StatusBadge status={t.status} /></td>
                 <td className="px-4 py-3 text-right text-slate-700">{t.usersCount.toLocaleString()}</td>
                 <td className="px-4 py-3 text-right text-slate-700">{t.objectsCount.toLocaleString()}</td>
-                <td className="px-4 py-3 text-slate-500">
-                  {new Date(t.createdAt).toLocaleDateString()}
+                <td className="px-4 py-3 text-slate-500" title={t.lastSeenAt ?? ''}>
+                  {relativeAgo(t.lastSeenAt)}
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <div className="flex items-center justify-end gap-2">
-                    <Link href={`/superadmin/tenants/${t.id}`}
-                      className="text-indigo-600 hover:text-indigo-800 font-medium text-xs">View</Link>
-                    {t.status !== 'suspended' ? (
-                      <button
-                        onClick={() => handleSuspend(t.id)}
-                        disabled={actionLoading === t.id}
-                        className="text-amber-600 hover:text-amber-800 font-medium text-xs disabled:opacity-50"
-                      >
-                        Suspend
-                      </button>
-                    ) : (
-                      <button
-                        onClick={() => handleActivate(t.id)}
-                        disabled={actionLoading === t.id}
-                        className="text-emerald-600 hover:text-emerald-800 font-medium text-xs disabled:opacity-50"
-                      >
-                        Activate
-                      </button>
-                    )}
-                  </div>
+                  <Link href={`/superadmin/tenants/${t.id}?instance=${t.instanceId}`}
+                    className="text-indigo-600 hover:text-indigo-800 font-medium text-xs">View</Link>
                 </td>
               </tr>
             ))}
             {!loading && tenants.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-slate-400">
-                  No tenants found
+                <td colSpan={8} className="px-4 py-12 text-center">
+                  <p className="text-slate-400 text-sm mb-3">
+                    No tenants in cache.{' '}
+                    {(cacheMeta?.newestSyncedAt ?? null) === null
+                      ? 'Click "Sync now" to populate from active instances.'
+                      : 'Try clearing filters or running a sync.'}
+                  </p>
+                  <button
+                    onClick={handleSync}
+                    disabled={syncLoading}
+                    className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+                  >
+                    {syncLoading ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-3.5 h-3.5" />
+                    )}
+                    Sync now
+                  </button>
                 </td>
               </tr>
             )}
@@ -307,215 +372,6 @@ export default function TenantsPage() {
           </div>
         </div>
       )}
-
-      {discoverOpen && (
-        <DiscoverInstancesModal
-          loading={discoverLoading}
-          error={discoverError}
-          data={discoverData}
-          onClose={() => setDiscoverOpen(false)}
-          onRetry={runDiscover}
-        />
-      )}
-    </div>
-  );
-}
-
-interface DiscoverInstancesModalProps {
-  loading: boolean;
-  error: string | null;
-  data: DiscoverTenantsResponse | null;
-  onClose: () => void;
-  onRetry: () => void;
-}
-
-function DiscoverInstancesModal({
-  loading,
-  error,
-  data,
-  onClose,
-  onRetry,
-}: DiscoverInstancesModalProps) {
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="bg-white rounded-xl shadow-xl w-full max-w-4xl max-h-[85vh] flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
-          <div className="flex items-center gap-3">
-            <Server className="w-5 h-5 text-slate-700" />
-            <h2 className="text-lg font-semibold text-slate-900">
-              Tenants across active instances
-            </h2>
-            {data && (
-              <span className="text-xs text-slate-500">
-                {data.totals.ok}/{data.totals.instances} instances replied · {data.totals.tenants} tenants found
-              </span>
-            )}
-          </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded hover:bg-slate-100"
-            aria-label="Close"
-          >
-            <X className="w-4 h-4 text-slate-500" />
-          </button>
-        </div>
-
-        <div className="overflow-y-auto px-5 py-4 flex-1">
-          {loading && (
-            <div className="flex items-center gap-2 text-sm text-slate-500 py-8 justify-center">
-              <Loader2 className="w-4 h-4 animate-spin" />
-              Querying instances…
-            </div>
-          )}
-
-          {!loading && error && (
-            <div className="flex items-start gap-3 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
-              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-              <div className="flex-1">
-                <p>{error}</p>
-                <button
-                  onClick={onRetry}
-                  className="mt-2 text-xs font-medium text-red-700 underline hover:text-red-800"
-                >
-                  Retry
-                </button>
-              </div>
-            </div>
-          )}
-
-          {!loading && !error && data && data.results.length === 0 && (
-            <p className="text-sm text-slate-500 py-6 text-center">
-              No active instances to query. Approve a self-registered instance first.
-            </p>
-          )}
-
-          {!loading && !error && data && data.results.length > 0 && (
-            <div className="space-y-3">
-              {data.results.map((r) => (
-                <details
-                  key={r.instanceId}
-                  className="rounded-lg border border-slate-200 bg-slate-50 open:bg-white"
-                >
-                  <summary className="cursor-pointer list-none px-4 py-3 flex items-center gap-3">
-                    {r.ok ? (
-                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                    ) : (
-                      <XCircle className="w-4 h-4 text-red-600 shrink-0" />
-                    )}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium text-slate-900 truncate">
-                          {r.instanceName}
-                        </span>
-                        <span className="text-xs px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 uppercase">
-                          {r.environment}
-                        </span>
-                      </div>
-                      <p className="text-xs text-slate-400 truncate">{r.instanceUrl}</p>
-                    </div>
-                    <div className="text-right text-xs text-slate-500 shrink-0">
-                      {r.ok ? (
-                        <>
-                          <span className="font-medium text-slate-700">
-                            {r.tenantCount ?? 0} tenants
-                          </span>
-                          {typeof r.latencyMs === 'number' && (
-                            <span className="block">{r.latencyMs} ms</span>
-                          )}
-                        </>
-                      ) : (
-                        <span className="text-red-600 font-medium">
-                          {r.error?.code ?? 'ERROR'}
-                        </span>
-                      )}
-                    </div>
-                  </summary>
-
-                  <div className="px-4 pb-3 text-sm">
-                    {r.ok && r.tenants && r.tenants.length > 0 && (
-                      <table className="w-full mt-1">
-                        <thead>
-                          <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
-                            <th className="py-1.5 pr-2 font-medium">Name</th>
-                            <th className="py-1.5 px-2 font-medium">Slug</th>
-                            <th className="py-1.5 px-2 font-medium">Status</th>
-                            <th className="py-1.5 px-2 font-medium text-right">Users</th>
-                            <th className="py-1.5 px-2 font-medium text-right">Objects</th>
-                            <th className="py-1.5 pl-2 font-medium">Created</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                          {r.tenants.map((t) => (
-                            <tr key={t.id}>
-                              <td className="py-1.5 pr-2 text-slate-800">{t.name}</td>
-                              <td className="py-1.5 px-2 text-slate-500">{t.slug}</td>
-                              <td className="py-1.5 px-2">
-                                <span className={clsx(
-                                  'px-1.5 py-0.5 rounded-full text-xs font-medium capitalize',
-                                  STATUS_BADGE[t.status] ?? 'bg-slate-100 text-slate-600',
-                                )}>
-                                  {t.status}
-                                </span>
-                              </td>
-                              <td className="py-1.5 px-2 text-right text-slate-700">
-                                {t.userCount.toLocaleString()}
-                              </td>
-                              <td className="py-1.5 px-2 text-right text-slate-700">
-                                {t.objectCount.toLocaleString()}
-                              </td>
-                              <td className="py-1.5 pl-2 text-slate-500">
-                                {new Date(t.createdAt).toLocaleDateString()}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    )}
-                    {r.ok && (!r.tenants || r.tenants.length === 0) && (
-                      <p className="text-xs text-slate-500 py-2">
-                        Instance replied but reported no tenants.
-                      </p>
-                    )}
-                    {!r.ok && r.error && (
-                      <p className="text-xs text-red-600 py-2">
-                        {r.error.message}
-                        {typeof r.error.status === 'number' && ` (HTTP ${r.error.status})`}
-                      </p>
-                    )}
-                  </div>
-                </details>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="px-5 py-3 border-t border-slate-200 flex items-center justify-between">
-          <p className="text-xs text-slate-500">
-            {data?.scannedAt && `Scanned at ${new Date(data.scannedAt).toLocaleString()}`}
-          </p>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={onRetry}
-              disabled={loading}
-              className="px-3 py-1.5 text-sm font-medium text-slate-700 border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-50"
-            >
-              Re-scan
-            </button>
-            <button
-              onClick={onClose}
-              className="px-3 py-1.5 text-sm font-medium text-white bg-slate-700 rounded-lg hover:bg-slate-800"
-            >
-              Close
-            </button>
-          </div>
-        </div>
-      </div>
     </div>
   );
 }

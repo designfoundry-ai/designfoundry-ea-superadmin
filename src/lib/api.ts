@@ -89,36 +89,85 @@ export interface OverviewStats {
   churnHistory: Array<{ month: string; rate: number }>;
 }
 
-// ─── Tenants ──────────────────────────────────────────────────────────
+// ─── Tenants (always-local — backed by tenants_cache, never proxied) ──
+//
+// Tenants are owned by individual EA instances, not by the superadmin.
+// The superadmin's view of tenants is a cache table populated by
+// /api/superadmin/tenants/sync (full pull) and the event-bus tenant.*
+// handlers (incremental). These helpers always hit local Next routes —
+// they intentionally bypass the rezonator proxy that NEXT_PUBLIC_API_URL
+// configures for older "central tenant store" code paths.
 
-export async function getTenants(params?: TenantFilters) {
+const TENANTS_BASE = '/api/superadmin/tenants';
+
+async function tenantsRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const token = typeof window !== 'undefined'
+    ? localStorage.getItem('superadmin_token')
+    : null;
+  const res = await fetch(`${TENANTS_BASE}${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...options.headers,
+    },
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ message: res.statusText }));
+    throw new ApiError(
+      body.message || body.error || 'API error',
+      res.status,
+      body.code,
+    );
+  }
+  if (res.status === 204) return undefined as T;
+  return res.json();
+}
+
+export async function getTenants(params?: TenantFilters): Promise<TenantList> {
   const qs = params ? '?' + new URLSearchParams(params as Record<string, string>).toString() : '';
-  return request<TenantList>(`/superadmin/tenants${qs}`);
+  return tenantsRequest<TenantList>(qs);
 }
 
-export async function getTenant(id: string) {
-  return request<Tenant>(`/superadmin/tenants/${id}`);
+export async function getTenant(id: string, opts: { instance?: string } = {}): Promise<TenantDetail> {
+  const qs = opts.instance ? `?instance=${encodeURIComponent(opts.instance)}` : '';
+  return tenantsRequest<TenantDetail>(`/${id}${qs}`);
 }
 
-export async function suspendTenant(id: string) {
-  return request<Tenant>(`/superadmin/tenants/${id}/suspend`, { method: 'POST' });
+export async function syncTenantsFromInstances(
+  opts: { instanceId?: string } = {},
+): Promise<TenantsSyncResponse> {
+  const qs = opts.instanceId ? `?instanceId=${encodeURIComponent(opts.instanceId)}` : '';
+  return tenantsRequest<TenantsSyncResponse>(`/sync${qs}`, { method: 'POST' });
 }
 
-export async function activateTenant(id: string) {
-  return request<Tenant>(`/superadmin/tenants/${id}/activate`, { method: 'POST' });
+// Lifecycle endpoints still hit the legacy local routes that mutate the
+// (now-orphaned) tenants table. They are NOT yet proxied through to the
+// owning instance — see [id]/route.ts PATCH/DELETE 501s for the same
+// reason. Kept as-is so existing UI paths don't break harder, but expect
+// 501 / errors until the instance-api-client is extended with mutations.
+export async function suspendTenant(id: string): Promise<Tenant> {
+  return tenantsRequest<Tenant>(`/${id}/suspend`, { method: 'POST' });
 }
 
-export async function updateTenant(id: string, data: Partial<Tenant>) {
-  return request<Tenant>(`/superadmin/tenants/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
+export async function activateTenant(id: string): Promise<Tenant> {
+  return tenantsRequest<Tenant>(`/${id}/activate`, { method: 'POST' });
 }
 
-export async function deleteTenant(id: string) {
-  return request<void>(`/superadmin/tenants/${id}`, { method: 'DELETE' });
+export async function updateTenant(id: string, data: Partial<Tenant>): Promise<Tenant> {
+  return tenantsRequest<Tenant>(`/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteTenant(id: string): Promise<void> {
+  return tenantsRequest<void>(`/${id}`, { method: 'DELETE' });
 }
 
 export async function downloadTenantBackup(id: string): Promise<Blob> {
   const token = typeof window !== 'undefined' ? localStorage.getItem('superadmin_token') : null;
-  const response = await fetch(`${API_BASE}/superadmin/tenants/${id}/backup`, {
+  const response = await fetch(`${TENANTS_BASE}/${id}/backup`, {
     method: 'POST',
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
@@ -133,6 +182,7 @@ export interface TenantFilters {
   plan?: string;
   status?: string;
   search?: string;
+  instance?: string;
   from?: string;
   to?: string;
   page?: number;
@@ -144,14 +194,24 @@ export interface TenantList {
   total: number;
   page: number;
   limit: number;
+  cache?: {
+    liveRows: number;
+    deletedRows: number;
+    newestSyncedAt: string | null;
+    oldestSyncedAt: string | null;
+    newestEventAt: string | null;
+  };
 }
 
 export interface Tenant {
   id: string;
+  instanceId: string;
+  instanceName: string;
+  instanceEnvironment: InstanceEnvironment;
   name: string;
   slug: string;
-  plan: 'free' | 'team' | 'professional' | 'enterprise';
-  status: 'active' | 'trial' | 'suspended' | 'canceled';
+  plan: 'free' | 'team' | 'professional' | 'enterprise' | 'unknown' | string;
+  status: 'active' | 'trial' | 'suspended' | 'canceled' | 'cancelled' | 'unknown' | string;
   mrr: number;
   usersCount: number;
   objectsCount: number;
@@ -161,7 +221,60 @@ export interface Tenant {
   primaryEmail: string;
   createdAt: string;
   lastActiveAt: string;
+  firstSeenAt?: string;
+  lastSeenAt?: string;
+  lastSyncedAt?: string | null;
+  lastEventAt?: string | null;
+  deletedAt?: string | null;
   trialEndsAt?: string;
+}
+
+export interface TenantDetailFreshness {
+  source: 'live' | 'cache_fallback';
+  fetchedAt: string;
+  instance: { id: string; name: string };
+  cacheAge?: { lastSyncedAt: string | null; lastEventAt: string | null };
+  error?: { code: string; message: string; status?: number };
+}
+
+export interface TenantDetail extends Tenant {
+  users?: Array<{
+    id: string;
+    email: string;
+    name?: string;
+    tenantId: string;
+    role?: string;
+    status: string;
+    lastLoginAt?: string;
+    createdAt: string;
+  }>;
+  _freshness?: TenantDetailFreshness;
+}
+
+export interface TenantsSyncInstanceResult {
+  instanceId: string;
+  instanceName: string;
+  environment: InstanceEnvironment;
+  ok: boolean;
+  skipped?: boolean;
+  reason?: string;
+  upserted?: number;
+  tombstoned?: number;
+  latencyMs?: number;
+  error?: { code: string; message: string; status?: number };
+}
+
+export interface TenantsSyncResponse {
+  scannedAt: string;
+  totals: {
+    instances: number;
+    ok: number;
+    failed: number;
+    skipped: number;
+    tenantsUpserted: number;
+    tenantsTombstoned: number;
+  };
+  results: TenantsSyncInstanceResult[];
 }
 
 // ─── Users ────────────────────────────────────────────────────────────
@@ -686,41 +799,6 @@ export async function approveInstance(id: string): Promise<Instance> {
 // Hard-revokes the key and deactivates the row.
 export async function rejectInstance(id: string): Promise<Instance> {
   return instancesRequest(`/${id}/reject`, { method: 'POST' });
-}
-
-// Fan-out: ask every active instance for its tenant list and aggregate
-// the responses. Drives the "Discover from instances" action on the
-// superadmin tenants page.
-export interface DiscoveredInstanceTenant {
-  id: string;
-  name: string;
-  slug: string;
-  status: string;
-  userCount: number;
-  objectCount: number;
-  createdAt: string;
-}
-
-export interface DiscoveredInstanceResult {
-  instanceId: string;
-  instanceName: string;
-  instanceUrl: string;
-  environment: InstanceEnvironment;
-  ok: boolean;
-  tenantCount?: number;
-  tenants?: DiscoveredInstanceTenant[];
-  latencyMs?: number;
-  error?: { code: string; message: string; status?: number };
-}
-
-export interface DiscoverTenantsResponse {
-  scannedAt: string;
-  totals: { instances: number; ok: number; failed: number; tenants: number };
-  results: DiscoveredInstanceResult[];
-}
-
-export async function discoverInstanceTenants(): Promise<DiscoverTenantsResponse> {
-  return instancesRequest('/tenants', { method: 'POST' });
 }
 
 // ─── Admin Audit Log ──────────────────────────────────────────────────

@@ -1,113 +1,159 @@
+// Tenant detail — live from the owning instance, with cache fallback.
+//
+// GET resolves the tenant's instance via tenants_cache (PK is
+// instance_id + tenant_id; tenant_id alone is usually unique across
+// instances, but if two instances both claim the same id we accept
+// ?instance=<UUID> to disambiguate). It then calls
+// /api/v1/platform/tenants/{id} on that instance and merges the live
+// stats with the cache metadata. Includes a _freshness block so the
+// UI can show "live from <instance>" vs "cache fallback from N min ago".
+//
+// PATCH and DELETE are NOT YET migrated to the multi-instance model —
+// they used to mutate a local `tenants` table that no longer exists
+// as a source of truth. They now respond 501 with a clear message so
+// the UI fails loudly instead of silently corrupting state.
+
 import { NextRequest, NextResponse } from 'next/server';
-import pool from '@/lib/db';
-import { requireAdmin, AuthError, getClientIp } from '@/lib/auth';
-import { logAudit } from '@/lib/audit';
+import { requireAdmin, AuthError } from '@/lib/auth';
+import {
+  InstanceApiError,
+  getTenantDetail,
+} from '@/lib/services/instance-api-client';
+import {
+  type CachedTenant,
+  findTenantByIdAnywhere,
+  getCachedTenant,
+} from '@/lib/services/tenants-cache';
 
-async function getTenantRow(id: string) {
-  const { rows } = await pool.query<{
-    id: string; name: string; slug: string; plan: string; status: string;
-    is_active: boolean; created_at: string; license_blob: string | null;
-  }>(
-    `SELECT id, name, slug, plan, status, is_active, created_at, license_blob
-     FROM tenants WHERE id = $1`,
-    [id],
-  );
-  return rows[0] ?? null;
-}
-
-export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
   try {
     requireAdmin(req);
     const { id } = await params;
 
-    const t = await getTenantRow(id);
-    if (!t) return NextResponse.json({ message: 'Tenant not found' }, { status: 404 });
+    const url = new URL(req.url);
+    const instanceHint = url.searchParams.get('instance');
 
-    let usersCount = 0, objectsCount = 0, diagramsCount = 0, primaryEmail = '';
+    const cached = await resolveCachedRow(id, instanceHint);
+    if (!cached) {
+      return NextResponse.json(
+        { message: 'Tenant not found in any instance cache' },
+        { status: 404 },
+      );
+    }
 
-    await Promise.allSettled([
-      pool.query<{ cnt: string }>(
-        `SELECT COUNT(*) AS cnt FROM "t_${t.slug}".users WHERE is_system_account = false`,
-      ).then(r => { usersCount = parseInt(r.rows[0]?.cnt ?? '0', 10); }),
-
-      pool.query<{ email: string }>(
-        `SELECT email FROM "t_${t.slug}".users WHERE roles = 'admin' AND is_system_account = false LIMIT 1`,
-      ).then(r => { primaryEmail = r.rows[0]?.email ?? ''; }),
-
-      pool.query<{ cnt: string }>(
-        `SELECT COUNT(*) AS cnt FROM "t_${t.slug}".architecture_objects`,
-      ).then(r => { objectsCount = parseInt(r.rows[0]?.cnt ?? '0', 10); }),
-
-      pool.query<{ cnt: string }>(
-        `SELECT COUNT(*) AS cnt FROM "t_${t.slug}".diagrams`,
-      ).then(r => { diagramsCount = parseInt(r.rows[0]?.cnt ?? '0', 10); }),
-    ]);
-
-    return NextResponse.json({
-      id: t.id, name: t.name, slug: t.slug, plan: t.plan, status: t.status,
-      mrr: 0, usersCount, objectsCount, diagramsCount, storageUsedMb: 0,
-      primaryEmail, createdAt: t.created_at, lastActiveAt: t.created_at,
-      licenseBlob: t.license_blob,
-    });
+    // Best-effort live fetch. Falls back to cache so the page is never blank.
+    try {
+      const live = await getTenantDetail(cached.instanceId, cached.tenantId);
+      return NextResponse.json({
+        ...toApiShape(cached),
+        usersCount: live.userCount,
+        objectsCount: live.objectCount,
+        primaryEmail: live.users?.[0]?.email ?? '',
+        users: live.users ?? [],
+        _freshness: {
+          source: 'live',
+          fetchedAt: new Date().toISOString(),
+          instance: { id: cached.instanceId, name: cached.instanceName },
+        },
+      });
+    } catch (err) {
+      const reason =
+        err instanceof InstanceApiError
+          ? { code: err.code, message: err.message, status: err.status }
+          : {
+              code: 'INTERNAL',
+              message: err instanceof Error ? err.message : 'unknown error',
+            };
+      return NextResponse.json({
+        ...toApiShape(cached),
+        users: [],
+        _freshness: {
+          source: 'cache_fallback',
+          fetchedAt: new Date().toISOString(),
+          instance: { id: cached.instanceId, name: cached.instanceName },
+          cacheAge: {
+            lastSyncedAt: cached.lastSyncedAt,
+            lastEventAt: cached.lastEventAt,
+          },
+          error: reason,
+        },
+      });
+    }
   } catch (err) {
-    if (err instanceof AuthError) return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
+    if (err instanceof AuthError) {
+      return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
+    }
     console.error('[tenant GET]', err);
     return NextResponse.json({ message: 'Internal server error' }, { status: 500 });
   }
 }
 
-export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  try {
-    const admin = requireAdmin(req);
-    const { id } = await params;
-    const body = await req.json() as { name?: string; plan?: string; status?: string };
-
-    const t = await getTenantRow(id);
-    if (!t) return NextResponse.json({ message: 'Tenant not found' }, { status: 404 });
-
-    const updates: string[] = [];
-    const values: unknown[] = [];
-    let idx = 1;
-
-    if (body.name !== undefined) { updates.push(`name = $${idx++}`); values.push(body.name); }
-    if (body.plan !== undefined) { updates.push(`plan = $${idx++}`); values.push(body.plan); }
-    if (body.status !== undefined) { updates.push(`status = $${idx++}`); values.push(body.status); }
-
-    if (updates.length > 0) {
-      values.push(id);
-      await pool.query(`UPDATE tenants SET ${updates.join(', ')} WHERE id = $${idx}`, values);
-      await logAudit(admin.id, admin.email, 'TENANT_UPDATED', 'tenant', id,
-        { changes: body }, getClientIp(req));
-    }
-
-    const updated = await getTenantRow(id);
-    return NextResponse.json(updated);
-  } catch (err) {
-    if (err instanceof AuthError) return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
-    console.error('[tenant PATCH]', err);
-    return NextResponse.json({ message: 'Internal server error' }, { status: 500 });
-  }
+export function PATCH() {
+  // TODO(multi-instance): proxy to {instance}/api/v1/platform/tenants/{id}
+  // via instance-api-client once it supports mutations. Until then this
+  // endpoint cannot safely apply tenant edits.
+  return NextResponse.json(
+    {
+      message:
+        'Tenant edits via superadmin are not yet wired through to the owning instance. Edit the tenant directly on the EA instance.',
+      code: 'NOT_IMPLEMENTED',
+    },
+    { status: 501 },
+  );
 }
 
-export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  try {
-    const admin = requireAdmin(req);
-    const { id } = await params;
+export function DELETE() {
+  // TODO(multi-instance): proxy to {instance}/api/v1/platform/tenants/{id}
+  return NextResponse.json(
+    {
+      message:
+        'Tenant deletion via superadmin is not yet wired through to the owning instance. Delete the tenant directly on the EA instance.',
+      code: 'NOT_IMPLEMENTED',
+    },
+    { status: 501 },
+  );
+}
 
-    const t = await getTenantRow(id);
-    if (!t) return NextResponse.json({ message: 'Tenant not found' }, { status: 404 });
-
-    // Drop tenant schema, then delete tenant record
-    await pool.query(`DROP SCHEMA IF EXISTS "t_${t.slug}" CASCADE`);
-    await pool.query(`DELETE FROM tenants WHERE id = $1`, [id]);
-
-    await logAudit(admin.id, admin.email, 'TENANT_DELETED', 'tenant', id,
-      { name: t.name, slug: t.slug }, getClientIp(req));
-
-    return NextResponse.json({ success: true });
-  } catch (err) {
-    if (err instanceof AuthError) return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
-    console.error('[tenant DELETE]', err);
-    return NextResponse.json({ message: 'Internal server error' }, { status: 500 });
+async function resolveCachedRow(
+  tenantId: string,
+  instanceHint: string | null,
+): Promise<CachedTenant | null> {
+  if (instanceHint) {
+    return getCachedTenant(instanceHint, tenantId);
   }
+  const matches = await findTenantByIdAnywhere(tenantId);
+  if (matches.length === 0) return null;
+  if (matches.length === 1) return matches[0];
+  // Ambiguous — prefer a non-deleted match; otherwise return the first.
+  const live = matches.find((m) => m.deletedAt === null);
+  return live ?? matches[0];
+}
+
+function toApiShape(t: CachedTenant) {
+  return {
+    id: t.tenantId,
+    instanceId: t.instanceId,
+    instanceName: t.instanceName,
+    instanceEnvironment: t.instanceEnvironment,
+    name: t.name,
+    slug: t.slug,
+    status: t.status,
+    plan: t.plan ?? 'unknown',
+    usersCount: t.userCount,
+    objectsCount: t.objectCount,
+    diagramsCount: 0,
+    mrr: 0,
+    storageUsedMb: 0,
+    primaryEmail: '',
+    createdAt: t.createdAtSrc ?? t.firstSeenAt,
+    lastActiveAt: t.lastEventAt ?? t.lastSeenAt,
+    firstSeenAt: t.firstSeenAt,
+    lastSeenAt: t.lastSeenAt,
+    lastSyncedAt: t.lastSyncedAt,
+    lastEventAt: t.lastEventAt,
+    deletedAt: t.deletedAt,
+  };
 }

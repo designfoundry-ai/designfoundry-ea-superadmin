@@ -2,11 +2,12 @@
 
 import { useEffect, useState, use } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import {
   ArrowLeft, AlertTriangle, Building2, Users, LayoutGrid,
-  BarChart3, Pause, Play, Trash2
+  BarChart3, Trash2, Server, CheckCircle2, Clock, RefreshCw, Loader2,
 } from 'lucide-react';
-import { getTenant, getTenantUsers, suspendTenant, activateTenant, type Tenant, type User } from '@/lib/api';
+import { getTenant, type TenantDetail } from '@/lib/api';
 import { clsx } from 'clsx';
 
 type Tab = 'overview' | 'users' | 'settings';
@@ -17,47 +18,53 @@ const STATUS_COLOR: Record<string, string> = {
   suspended: 'text-red-600',
   canceled:  'text-slate-500',
   cancelled: 'text-slate-500',
+  unknown:   'text-slate-400',
 };
+
+function relativeAgo(iso: string | null | undefined): string {
+  if (!iso) return 'never';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 0) return 'just now';
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min} min ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr} h ago`;
+  return `${Math.round(hr / 24)} d ago`;
+}
 
 export default function TenantDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const [tenant, setTenant] = useState<Tenant | null>(null);
-  const [users, setUsers] = useState<User[]>([]);
+  const searchParams = useSearchParams();
+  const instanceHint = searchParams.get('instance') ?? undefined;
+  const [tenant, setTenant] = useState<TenantDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>('overview');
-  const [actionLoading, setActionLoading] = useState(false);
+
+  async function reload() {
+    setRefreshing(true);
+    try {
+      const fresh = await getTenant(id, { instance: instanceHint });
+      setTenant(fresh);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load tenant');
+    } finally {
+      setRefreshing(false);
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
     setLoading(true);
-    getTenant(id)
-      .then(t => { setTenant(t); setLoading(false); })
-      .catch(e => { setError(e.message); setLoading(false); });
-  }, [id]);
+    reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, instanceHint]);
 
-  useEffect(() => {
-    if (activeTab === 'users' && tenant) {
-      getTenantUsers(id).then(r => setUsers(r.users)).catch(() => {});
-    }
-  }, [activeTab, id, tenant]);
-
-  async function handleSuspend() {
-    if (!tenant) return;
-    setActionLoading(true);
-    await suspendTenant(id).catch(() => {});
-    const updated = await getTenant(id).catch(() => null);
-    if (updated) setTenant(updated);
-    setActionLoading(false);
-  }
-
-  async function handleActivate() {
-    if (!tenant) return;
-    setActionLoading(true);
-    await activateTenant(id).catch(() => {});
-    const updated = await getTenant(id).catch(() => null);
-    if (updated) setTenant(updated);
-    setActionLoading(false);
-  }
+  const users = tenant?.users ?? [];
 
   if (loading) {
     return (
@@ -91,6 +98,48 @@ export default function TenantDetailPage({ params }: { params: Promise<{ id: str
         Back to Tenants
       </Link>
 
+      {/* Freshness banner — shows whether data is live from the instance or
+          a cache fallback because the instance is unreachable. */}
+      {tenant._freshness && (
+        <div
+          className={clsx(
+            'mb-4 px-3 py-2 rounded-lg text-xs flex items-center gap-2 border',
+            tenant._freshness.source === 'live'
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+              : 'bg-amber-50 border-amber-200 text-amber-700',
+          )}
+        >
+          {tenant._freshness.source === 'live' ? (
+            <CheckCircle2 className="w-4 h-4 shrink-0" />
+          ) : (
+            <Clock className="w-4 h-4 shrink-0" />
+          )}
+          <div className="flex-1">
+            {tenant._freshness.source === 'live' ? (
+              <>
+                Live from <strong>{tenant._freshness.instance.name}</strong> — fetched {relativeAgo(tenant._freshness.fetchedAt)}
+              </>
+            ) : (
+              <>
+                Cache fallback — <strong>{tenant._freshness.instance.name}</strong> unreachable
+                {tenant._freshness.error?.message && <> ({tenant._freshness.error.message})</>}.
+                {' '}Last synced {relativeAgo(tenant._freshness.cacheAge?.lastSyncedAt)}
+                {tenant._freshness.cacheAge?.lastEventAt
+                  && <>, last event {relativeAgo(tenant._freshness.cacheAge.lastEventAt)}</>}.
+              </>
+            )}
+          </div>
+          <button
+            onClick={reload}
+            disabled={refreshing}
+            className="ml-3 inline-flex items-center gap-1 px-2 py-1 rounded border border-current/30 hover:bg-white/30 disabled:opacity-50"
+          >
+            {refreshing ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+            Refresh
+          </button>
+        </div>
+      )}
+
       {/* Header */}
       <div className="bg-white rounded-xl border border-slate-200 p-6 mb-6">
         <div className="flex items-start justify-between">
@@ -104,6 +153,11 @@ export default function TenantDetailPage({ params }: { params: Promise<{ id: str
               {tenant.primaryEmail && (
                 <p className="text-sm text-slate-500">{tenant.primaryEmail}</p>
               )}
+              <p className="mt-2 inline-flex items-center gap-1.5 text-xs text-slate-500">
+                <Server className="w-3 h-3" />
+                Lives on <strong className="text-slate-700">{tenant.instanceName}</strong>
+                <span className="uppercase opacity-60">{tenant.instanceEnvironment}</span>
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -113,25 +167,9 @@ export default function TenantDetailPage({ params }: { params: Promise<{ id: str
             <span className="px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded-full text-xs font-medium capitalize">
               {tenant.plan}
             </span>
-            {tenant.status !== 'suspended' ? (
-              <button
-                onClick={handleSuspend}
-                disabled={actionLoading}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-100 text-amber-700
-                           rounded-lg text-sm font-medium hover:bg-amber-200 disabled:opacity-50"
-              >
-                <Pause className="w-3.5 h-3.5" /> Suspend
-              </button>
-            ) : (
-              <button
-                onClick={handleActivate}
-                disabled={actionLoading}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-100 text-emerald-700
-                           rounded-lg text-sm font-medium hover:bg-emerald-200 disabled:opacity-50"
-              >
-                <Play className="w-3.5 h-3.5" /> Activate
-              </button>
-            )}
+            <span className="text-xs text-slate-400 italic">
+              Lifecycle actions: edit on the instance
+            </span>
           </div>
         </div>
       </div>

@@ -157,4 +157,52 @@ async function run(): Promise<void> {
       last_login_at   TIMESTAMPTZ
     )
   `);
+
+  // tenants_cache — superadmin's denormalised view of tenants that live
+  // on individual EA instances. Source of truth is each instance's own
+  // tenant table, accessed via /api/v1/platform/tenants. This cache lets
+  // the superadmin list/search across instances without fanning out on
+  // every page load. It is kept fresh by:
+  //   (a) event-bus tenant.* handlers (incremental, near-real-time)
+  //   (b) the /api/superadmin/tenants/sync endpoint (manual full refresh)
+  //
+  // PK is (instance_id, tenant_id) — the same tenant UUID could in theory
+  // exist on two instances. ON DELETE CASCADE keeps the cache consistent
+  // when an instance is removed from the registry.
+  await adminPool.query(`
+    CREATE TABLE IF NOT EXISTS tenants_cache (
+      instance_id     UUID NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+      tenant_id       UUID NOT NULL,
+      name            VARCHAR(255) NOT NULL,
+      slug            VARCHAR(255) NOT NULL,
+      status          VARCHAR(32)  NOT NULL DEFAULT 'unknown',
+      plan            VARCHAR(32),
+      user_count      INTEGER      NOT NULL DEFAULT 0,
+      object_count    INTEGER      NOT NULL DEFAULT 0,
+      created_at_src  TIMESTAMPTZ,
+      first_seen_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+      last_seen_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+      last_synced_at  TIMESTAMPTZ,
+      last_event_at   TIMESTAMPTZ,
+      deleted_at      TIMESTAMPTZ,
+      PRIMARY KEY (instance_id, tenant_id)
+    )
+  `);
+
+  await adminPool.query(`
+    CREATE INDEX IF NOT EXISTS idx_tenants_cache_instance
+      ON tenants_cache (instance_id, last_seen_at DESC)
+  `);
+  await adminPool.query(`
+    CREATE INDEX IF NOT EXISTS idx_tenants_cache_slug
+      ON tenants_cache (slug)
+  `);
+  await adminPool.query(`
+    CREATE INDEX IF NOT EXISTS idx_tenants_cache_status
+      ON tenants_cache (status) WHERE deleted_at IS NULL
+  `);
+  await adminPool.query(`
+    CREATE INDEX IF NOT EXISTS idx_tenants_cache_tenant_lookup
+      ON tenants_cache (tenant_id)
+  `);
 }

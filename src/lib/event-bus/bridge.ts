@@ -1,4 +1,5 @@
 import adminPool from '../admin-db';
+import { markDeleted, upsertTenant } from '../services/tenants-cache';
 import { EVENT_TYPES, type PlatformEvent } from './types';
 
 export interface BridgeContext {
@@ -29,6 +30,15 @@ export async function dispatchToBridge(
       case EVENT_TYPES.SYSTEM_HEALTH_PING:
       case EVENT_TYPES.INSTANCE_STARTED:
         await handleSystemHealthPing(envelope, ctx);
+        return;
+      case EVENT_TYPES.TENANT_CREATED:
+      case EVENT_TYPES.TENANT_SUSPENDED:
+      case EVENT_TYPES.TENANT_ACTIVATED:
+      case EVENT_TYPES.TENANT_PLAN_CHANGED:
+        await handleTenantUpsert(envelope, ctx);
+        return;
+      case EVENT_TYPES.TENANT_DELETED:
+        await handleTenantDeleted(envelope, ctx);
         return;
       default:
         return;
@@ -125,4 +135,74 @@ function isUuid(value: unknown): value is string {
       value,
     )
   );
+}
+
+/**
+ * tenant.created / .suspended / .activated / .plan_changed → UPSERT the
+ * cache row so the tenants list stays current without waiting for the next
+ * manual sync. envelope.tenantId is the authoritative tenant UUID;
+ * payload carries the human fields (name, slug, status, plan, counts).
+ *
+ * If payload omits a field, we let the cache keep its previous value
+ * (the COALESCE in tenants-cache.upsertTenant handles this).
+ */
+async function handleTenantUpsert(
+  envelope: PlatformEvent,
+  ctx: BridgeContext,
+): Promise<void> {
+  const tenantId = envelope.tenantId;
+  if (!isUuid(tenantId)) {
+    console.warn(
+      '[event-bus.bridge] tenant event missing tenantId',
+      { envelopeId: envelope.id, eventType: envelope.eventType },
+    );
+    return;
+  }
+
+  const payload = envelope.payload as {
+    name?: string;
+    slug?: string;
+    status?: string;
+    plan?: string | null;
+    userCount?: number;
+    objectCount?: number;
+    createdAt?: string;
+  };
+
+  // Status defaults by event_type when payload doesn't carry an explicit one.
+  const inferredStatus =
+    payload.status ??
+    (envelope.eventType === EVENT_TYPES.TENANT_SUSPENDED ? 'suspended' :
+     envelope.eventType === EVENT_TYPES.TENANT_ACTIVATED ? 'active' :
+     envelope.eventType === EVENT_TYPES.TENANT_CREATED   ? 'active' :
+     'unknown');
+
+  // Name and slug are required by the cache schema. If the event omits
+  // them (likely on a status-flip event) we skip the upsert — a later
+  // sync will fill in the row. Don't write half-empty cache rows.
+  if (!payload.name || !payload.slug) {
+    return;
+  }
+
+  await upsertTenant({
+    instanceId: ctx.instanceDbId,
+    tenantId,
+    name: payload.name,
+    slug: payload.slug,
+    status: inferredStatus,
+    plan: payload.plan ?? null,
+    userCount: payload.userCount,
+    objectCount: payload.objectCount,
+    createdAtSrc: payload.createdAt ?? null,
+    source: 'event',
+  });
+}
+
+async function handleTenantDeleted(
+  envelope: PlatformEvent,
+  ctx: BridgeContext,
+): Promise<void> {
+  const tenantId = envelope.tenantId;
+  if (!isUuid(tenantId)) return;
+  await markDeleted(ctx.instanceDbId, tenantId);
 }
