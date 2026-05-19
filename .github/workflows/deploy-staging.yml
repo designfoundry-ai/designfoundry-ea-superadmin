@@ -72,15 +72,26 @@ jobs:
           service_account: ${{ vars.SUPERADMIN_SERVICE_ACCOUNT }}
           next_public_api_url: ${{ vars.NEXT_PUBLIC_API_URL }}
           jwt_secret_name: ${{ vars.JWT_SECRET_NAME || 'superadmin-jwt-secret' }}
-          # License signing key + KID — mounted at runtime by Cloud Run.
-          # The signer (src/lib/license.ts) reads:
-          #   - RSA_PRIVATE_KEY  → PEM body (mounted from Secret Manager)
-          #   - LICENSE_KEY_ID   → JWT `kid` header; must match the
-          #                        rezonator-side LICENSE_PUBLIC_KEY_<KID>
-          #                        env var, which parses as
-          #                        `rsa-2026-05` (lowercased + hyphenated).
-          extra_secrets: "RSA_PRIVATE_KEY=license-signing-private-key-rsa-2026-05:latest"
-          extra_env_vars: "LICENSE_KEY_ID=rsa-2026-05"
+          # License signing key + KID + cross-app event bus secrets.
+          #   - RSA_PRIVATE_KEY: signer (src/lib/license.ts) PEM body
+          #   - EVENT_BUS_SIGNING_SECRET: HMAC over the envelope; rezonator
+          #     verifies with the same value
+          #   - DEV_INGEST_SECRET: bearer header on the direct-HTTP path
+          #     (publisher.ts:162); matches rezonator's EVENT_BUS_INGEST_SECRET
+          #   - PLATFORM_REGISTRATION_TOKEN: rezonator's R1-16 self-register
+          #     handshake bootstrap; this side validates inbound registrations
+          extra_secrets: "RSA_PRIVATE_KEY=license-signing-private-key-rsa-2026-05:latest,EVENT_BUS_SIGNING_SECRET=event-bus-signing-secret:latest,DEV_INGEST_SECRET=event-bus-ingest-secret:latest,PLATFORM_REGISTRATION_TOKEN=platform-registration-token:latest"
+          # LICENSE_KEY_ID stamps the JWT `kid` header; must equal the kid
+          # rezonator parses from LICENSE_PUBLIC_KEY_<KID>.
+          # EVENT_BUS_MODE=direct picks the synchronous HTTP publisher path
+          # (publishToInstance → publishViaDirectHttp); Pub/Sub mode is not
+          # plumbed end-to-end yet.
+          extra_env_vars: "LICENSE_KEY_ID=rsa-2026-05||EVENT_BUS_MODE=direct"
+          # Staging is the only environment where browsers reach Cloud Run
+          # directly; the admin-staging org policy has been overridden to
+          # permit `allUsers`. Production keeps the default (locked-down)
+          # because no IAP is in place there yet.
+          allow_unauthenticated: "true"
 
       - name: Deployment summary
         shell: bash

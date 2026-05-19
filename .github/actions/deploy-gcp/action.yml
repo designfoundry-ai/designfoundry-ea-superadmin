@@ -83,6 +83,23 @@ inputs:
         LICENSE_SIGNING_PRIVATE_KEY_RSA_2026_05=license-signing-private-key-rsa-2026-05:latest
     required: false
     default: ""
+  allow_unauthenticated:
+    description: |
+      When 'true', deploy with --allow-unauthenticated so browsers can
+      reach the service directly (Cloud Run binds `allUsers` →
+      roles/run.invoker). The app's own /login page is then the only
+      auth gate.
+
+      When 'false' (default), deploy with --no-allow-unauthenticated and
+      bind only `domain:designfoundry.ai` — Layer 1 IAM. Browsers cannot
+      reach the service without IAP in front; this is the production
+      posture.
+
+      Staging opts in to 'true' because the admin-staging GCP project
+      org-policy was overridden to allow `allUsers`. Production has no
+      such override; keep this 'false' for prod until IAP is wired up.
+    required: false
+    default: "false"
 
 outputs:
   service_url:
@@ -155,6 +172,17 @@ runs:
           SET_SECRETS="${SET_SECRETS},${EXTRA_SECRETS}"
         fi
 
+        # Pick the auth-layer flag based on the caller's preference. With
+        # `allow_unauthenticated=true`, Cloud Run binds `allUsers` →
+        # roles/run.invoker, and the Next.js /login page becomes the sole
+        # auth gate. Otherwise the service is IAM-locked and a separate
+        # step below adds `domain:designfoundry.ai` as the invoker.
+        if [[ "${{ inputs.allow_unauthenticated }}" == "true" ]]; then
+          AUTH_FLAG="--allow-unauthenticated"
+        else
+          AUTH_FLAG="--no-allow-unauthenticated"
+        fi
+
         gcloud run deploy "${{ inputs.cloud_run_service }}" \
           --image="${{ inputs.gcp_region }}-docker.pkg.dev/${{ inputs.gcp_project_id }}/${{ inputs.artifact_registry_repo }}/designfoundry-ea-superadmin:${{ inputs.image_tag }}" \
           --region="${{ inputs.gcp_region }}" \
@@ -168,12 +196,15 @@ runs:
           --memory=512Mi \
           --cpu=1 \
           --port=3000 \
-          --no-allow-unauthenticated
+          $AUTH_FLAG
 
     - name: Grant Workspace domain run.invoker (idempotent)
+      if: inputs.allow_unauthenticated != 'true'
       shell: bash
       # Without this, --no-allow-unauthenticated leaves the service with no
       # end-user invoker bindings and the app 403s on every login attempt.
+      # Skipped when allow_unauthenticated=true — that path already binds
+      # allUsers via --allow-unauthenticated.
       run: |
         gcloud run services add-iam-policy-binding "${{ inputs.cloud_run_service }}" \
           --region="${{ inputs.gcp_region }}" \
