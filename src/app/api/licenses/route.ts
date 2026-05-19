@@ -119,6 +119,7 @@ export async function POST(req: NextRequest) {
     const licenseJwt = signLicense({
       customerId: tenantId ?? body.customerName.toLowerCase().replace(/\s+/g, '-'),
       customerName: body.customerName,
+      tenantSlug: body.tenantSlug ?? '',
       plan: body.plan,
       maxUsers,
       maxObjects,
@@ -172,7 +173,8 @@ export async function POST(req: NextRequest) {
           actor: { userId: admin.id, email: admin.email },
           payload: {
             licenseId: payload.jti,
-            licenseBlob: licenseJwt,
+            jwt: licenseJwt,
+            tenantSlug: body.tenantSlug ?? '',
             plan: body.plan,
             features,
             maxUsers,

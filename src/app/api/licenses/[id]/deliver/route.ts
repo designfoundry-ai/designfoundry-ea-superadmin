@@ -23,6 +23,7 @@ export async function POST(
     const { rows } = await pool.query<{
       license_id: string;
       tenant_id: string | null;
+      tenant_slug: string | null;
       delivery_model: string;
       plan: string;
       features: unknown;
@@ -32,9 +33,12 @@ export async function POST(
       license_blob: string;
       status: string;
     }>(
-      `SELECT license_id, tenant_id, delivery_model, plan, features,
-              max_users, max_objects, expires_at, license_blob, status
-       FROM licenses WHERE id = $1`,
+      `SELECT l.license_id, l.tenant_id, t.slug AS tenant_slug, l.delivery_model,
+              l.plan, l.features, l.max_users, l.max_objects, l.expires_at,
+              l.license_blob, l.status
+       FROM licenses l
+       LEFT JOIN tenants t ON t.id = l.tenant_id
+       WHERE l.id = $1`,
       [id],
     );
 
@@ -63,7 +67,8 @@ export async function POST(
         actor: { userId: admin.id, email: admin.email },
         payload: {
           licenseId: r.license_id,
-          licenseBlob: r.license_blob,
+          jwt: r.license_blob,
+          tenantSlug: r.tenant_slug ?? '',
           plan: r.plan,
           features: Array.isArray(r.features) ? (r.features as string[]) : [],
           maxUsers: r.max_users,

@@ -73,6 +73,7 @@ function ctx(id: string) {
 const baseLicenseRow = {
   license_id: 'jti-abc',
   tenant_id: 'tenant-1',
+  tenant_slug: 'acme',
   delivery_model: 'saas',
   plan: 'professional',
   features: ['core', 'collaboration'],
@@ -154,10 +155,13 @@ describe('POST /api/licenses/[id]/deliver', () => {
     const body = await res.json();
     expect(body).toEqual({ ok: true, envelopeId: 'env-xyz', mode: 'http' });
 
-    // EventBusService payload includes the license blob + features array.
+    // EventBusService payload includes the license JWT, tenant slug, and
+    // features array. Field name is `jwt` (was `licenseBlob` historically —
+    // renamed to match the rezonator bridge contract).
     const [arg] = deliverLicense.mock.calls[0];
     expect(arg.instanceId).toBe('inst-1');
-    expect(arg.payload.licenseBlob).toBe(baseLicenseRow.license_blob);
+    expect(arg.payload.jwt).toBe(baseLicenseRow.license_blob);
+    expect(arg.payload.tenantSlug).toBe(baseLicenseRow.tenant_slug);
     expect(arg.payload.licenseId).toBe(baseLicenseRow.license_id);
     expect(arg.payload.features).toEqual(baseLicenseRow.features);
 

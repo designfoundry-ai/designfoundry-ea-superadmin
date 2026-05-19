@@ -12,13 +12,17 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
     const { rows } = await pool.query<{
       id: string; license_id: string; tenant_id: string | null;
+      tenant_slug: string | null;
       customer_name: string; contact_email: string; delivery_model: string;
       plan: string; addons: string[]; features: string[];
       max_users: number; max_objects: number; expires_at: string | null;
     }>(
-      `SELECT id, license_id, tenant_id, customer_name, contact_email, delivery_model,
-              plan, addons, features, max_users, max_objects, expires_at
-       FROM licenses WHERE id = $1`,
+      `SELECT l.id, l.license_id, l.tenant_id, t.slug AS tenant_slug,
+              l.customer_name, l.contact_email, l.delivery_model,
+              l.plan, l.addons, l.features, l.max_users, l.max_objects, l.expires_at
+       FROM licenses l
+       LEFT JOIN tenants t ON t.id = l.tenant_id
+       WHERE l.id = $1`,
       [id],
     );
     if (!rows[0]) return NextResponse.json({ message: 'License not found' }, { status: 404 });
@@ -32,6 +36,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     const newJwt = signLicense({
       customerId: r.tenant_id ?? r.customer_name.toLowerCase().replace(/\s+/g, '-'),
       customerName: r.customer_name,
+      tenantSlug: r.tenant_slug ?? '',
       plan: r.plan,
       maxUsers: r.max_users,
       maxObjects: r.max_objects,

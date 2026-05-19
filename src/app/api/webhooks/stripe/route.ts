@@ -130,6 +130,7 @@ async function handleSubscriptionChange(subscription: StripeSubscription) {
   const licenseJwt = signLicense({
     customerId: tenant.id,
     customerName: tenant.name,
+    tenantSlug: tenant.slug,
     plan,
     maxUsers: defaults.maxUsers,
     maxObjects: defaults.maxObjects,

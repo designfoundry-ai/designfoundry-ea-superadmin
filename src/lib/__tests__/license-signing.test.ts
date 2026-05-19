@@ -16,6 +16,7 @@ const ORIGINAL_LICENSE_KEY_ID = process.env.LICENSE_KEY_ID;
 const samplePayload: LicensePayload = {
   customerId: 'tenant-acme',
   customerName: 'Acme Corp',
+  tenantSlug: 'acme',
   plan: 'enterprise',
   maxUsers: -1,
   maxObjects: -1,
@@ -58,8 +59,11 @@ describe('lib/license — signLicense', () => {
 
     expect(decoded.customerId).toBe(samplePayload.customerId);
     expect(decoded.customerName).toBe(samplePayload.customerName);
+    expect(decoded.tenantSlug).toBe(samplePayload.tenantSlug);
     expect(decoded.plan).toBe(samplePayload.plan);
     expect(decoded.features).toEqual(samplePayload.features);
+    // baseFeatures alias is the field name the rezonator reads off the JWT.
+    expect(decoded.baseFeatures).toEqual(samplePayload.features);
     expect(decoded.iss).toBe('designfoundry-superadmin');
     expect(typeof decoded.jti).toBe('string');
   });

@@ -7,7 +7,13 @@ export type { EventEnvelope, EventSeverity, EventActor } from './envelope';
 
 export interface LicenseDeliveredPayload {
   licenseId: string;
-  licenseBlob: string;
+  // Rezonator's event-bus bridge reads `payload.jwt` (event-bus.bridge.ts:137).
+  // Field name was historically `licenseBlob`; renamed for contract parity.
+  jwt: string;
+  // Rezonator's applyLicenseFromJWT requires a tenant slug — either from this
+  // envelope field or from the JWT body's tenantSlug claim. Including it on
+  // the envelope keeps the bridge from depending on JWT-claim presence.
+  tenantSlug: string;
   plan: string;
   features: string[];
   maxUsers: number;

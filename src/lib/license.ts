@@ -6,6 +6,11 @@ import { randomUUID } from 'crypto';
 export interface LicensePayload {
   customerId: string;
   customerName: string;
+  // Rezonator's applyLicenseFromJWT (license.service.ts:124) resolves the
+  // target tenant by slug — taken from this claim when no envelope override
+  // is given. Required for SaaS delivery; pass an empty string for on-prem
+  // licenses that won't be auto-delivered (matched at the route layer).
+  tenantSlug: string;
   plan: string;
   maxUsers: number;
   maxObjects: number;
@@ -40,7 +45,15 @@ export function signLicense(payload: LicensePayload, expiresAt?: Date): string {
     options.expiresIn = Math.floor((expiresAt.getTime() - Date.now()) / 1000);
   }
 
-  return jwt.sign({ ...payload }, privateKey, options);
+  // The rezonator's LicensePayload type names the feature list `baseFeatures`
+  // (license.types.ts:25). Emit both names to bridge the contract: external
+  // callers + this app's tests keep using `features`; rezonator can read
+  // `baseFeatures` directly off the JWT body.
+  return jwt.sign(
+    { ...payload, baseFeatures: payload.features },
+    privateKey,
+    options,
+  );
 }
 
 /** Wraps a JWT in a PEM-like .lic file format */
