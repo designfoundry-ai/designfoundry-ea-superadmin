@@ -68,6 +68,21 @@ inputs:
       via this input.
     required: false
     default: ""
+  extra_secrets:
+    description: |
+      Additional --set-secrets entries to mount from GCP Secret Manager.
+      Comma-separated `ENV_VAR_NAME=secret-name:version` pairs, appended
+      to the base mount (JWT_SECRET). Empty by default.
+
+      Use this for credentials the app must read at runtime (e.g. the
+      license-signing private key on staging): the value lives in Secret
+      Manager, is mounted by Cloud Run at start, and is never echoed
+      into deploy logs.
+
+      Example:
+        LICENSE_SIGNING_PRIVATE_KEY_RSA_2026_05=license-signing-private-key-rsa-2026-05:latest
+    required: false
+    default: ""
 
 outputs:
   service_url:
@@ -117,6 +132,7 @@ runs:
         # template substitution into the run-block, so multi-line secret
         # values (PEM keys, etc.) survive without breaking bash quoting.
         EXTRA_ENV_VARS: ${{ inputs.extra_env_vars }}
+        EXTRA_SECRETS: ${{ inputs.extra_secrets }}
       # Two-layer auth (see CLAUDE.md):
       #   Layer 1: Cloud Run IAM — only principals with roles/run.invoker can
       #            hit the service URL. Granted to domain:designfoundry.ai
@@ -134,6 +150,11 @@ runs:
           ENV_VARS="${ENV_VARS}||${EXTRA_ENV_VARS}"
         fi
 
+        SET_SECRETS="JWT_SECRET=${{ inputs.jwt_secret_name }}:latest"
+        if [[ -n "${EXTRA_SECRETS}" ]]; then
+          SET_SECRETS="${SET_SECRETS},${EXTRA_SECRETS}"
+        fi
+
         gcloud run deploy "${{ inputs.cloud_run_service }}" \
           --image="${{ inputs.gcp_region }}-docker.pkg.dev/${{ inputs.gcp_project_id }}/${{ inputs.artifact_registry_repo }}/designfoundry-ea-superadmin:${{ inputs.image_tag }}" \
           --region="${{ inputs.gcp_region }}" \
@@ -141,7 +162,7 @@ runs:
           --platform=managed \
           --service-account="${{ inputs.service_account }}" \
           --set-env-vars="${ENV_VARS}" \
-          --set-secrets="JWT_SECRET=${{ inputs.jwt_secret_name }}:latest" \
+          --set-secrets="${SET_SECRETS}" \
           --min-instances=0 \
           --max-instances=2 \
           --memory=512Mi \
