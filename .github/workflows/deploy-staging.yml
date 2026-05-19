@@ -72,11 +72,15 @@ jobs:
           service_account: ${{ vars.SUPERADMIN_SERVICE_ACCOUNT }}
           next_public_api_url: ${{ vars.NEXT_PUBLIC_API_URL }}
           jwt_secret_name: ${{ vars.JWT_SECRET_NAME || 'superadmin-jwt-secret' }}
-          # License signing key — mounted at runtime by Cloud Run; the
-          # superadmin reads it to sign issued license JWTs. The secret
-          # name is also the KID (rsa-2026-05) so the rezonator-side
-          # public key (LICENSE_PUBLIC_KEY_RSA_2026_05) can route by KID.
-          extra_secrets: "LICENSE_SIGNING_PRIVATE_KEY_RSA_2026_05=license-signing-private-key-rsa-2026-05:latest"
+          # License signing key + KID — mounted at runtime by Cloud Run.
+          # The signer (src/lib/license.ts) reads:
+          #   - RSA_PRIVATE_KEY  → PEM body (mounted from Secret Manager)
+          #   - LICENSE_KEY_ID   → JWT `kid` header; must match the
+          #                        rezonator-side LICENSE_PUBLIC_KEY_<KID>
+          #                        env var, which parses as
+          #                        `rsa-2026-05` (lowercased + hyphenated).
+          extra_secrets: "RSA_PRIVATE_KEY=license-signing-private-key-rsa-2026-05:latest"
+          extra_env_vars: "LICENSE_KEY_ID=rsa-2026-05"
 
       - name: Deployment summary
         shell: bash
